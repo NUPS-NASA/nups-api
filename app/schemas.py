@@ -665,6 +665,16 @@ class PipelineStepRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RepositoryLatestSessionRead(BaseModel):
+    session: SessionRead = Field(
+        description="Most recent processing session executed for the repository.",
+    )
+    steps: list[PipelineStepRead] = Field(
+        default_factory=list,
+        description="Ordered pipeline steps associated with the latest session.",
+    )
+
+
 class CandidateRead(BaseModel):
     id: int = Field(description="Candidate identifier.")
     session_id: int = Field(description="Session that produced the candidate.")
@@ -759,6 +769,7 @@ __all__ = [
     "PinRead",
     "PinReorder",
     "PipelineStepRead",
+    "RepositoryLatestSessionRead",
     "ProjectCreate",
     "ProjectMemberCreate",
     "ProjectMemberRead",
