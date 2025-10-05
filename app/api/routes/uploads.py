@@ -11,7 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import FileResponse
@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from ... import models, schemas
 from ...config import get_settings
 from ...database import SessionLocal
+from ...services.pipeline import SessionPipelineRunner
 from ..dependencies import DBSession
 
 router = APIRouter(tags=["uploads"])
@@ -212,46 +213,6 @@ def _hash_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-async def _simulate_step_runtime(seconds: int) -> None:
-    """Sleep in one-second increments to emulate long-running work."""
-
-    for _ in range(seconds):
-        await asyncio.sleep(1)
-
-
-async def _step_ingest() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_calibration() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_registration() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_photometry() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_classification() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_reporting() -> None:
-    await _simulate_step_runtime(10)
-
-
-SIMULATED_PIPELINE_STEPS: list[tuple[str, Callable[[], Awaitable[None]]]] = [
-    ("ingest", _step_ingest),
-    ("calibration", _step_calibration),
-    ("registration", _step_registration),
-    ("photometry", _step_photometry),
-    ("classification", _step_classification),
-    ("reporting", _step_reporting),
-]
-
 _ACTIVE_SESSION_LOCK = threading.Lock()
 _ACTIVE_SESSION_WORKERS: set[int] = set()
 
@@ -298,75 +259,8 @@ def _start_single_session_worker(session_id: int) -> None:
                         await session.commit()
                         return
 
-                    if not SIMULATED_PIPELINE_STEPS:
-                        session_obj.status = "completed"
-                        session_obj.progress = 100
-                        now = datetime.now(tz=timezone.utc)
-                        session_obj.started_at = session_obj.started_at or now
-                        session_obj.finished_at = now
-                        session_obj.current_step = "completed"
-                        await session.commit()
-                        return
-
-                    session_obj.status = "running"
-                    session_obj.current_step = SIMULATED_PIPELINE_STEPS[0][0]
-                    session_obj.started_at = session_obj.started_at or datetime.now(tz=timezone.utc)
-                    session_obj.progress = 0
-                    await session.commit()
-
-                    result = await session.scalars(
-                        select(models.PipelineStep)
-                        .where(models.PipelineStep.run_id == session_obj.run_id)
-                    )
-                    existing_steps = {step.step_name: step for step in result}
-
-                    pipeline_steps: list[models.PipelineStep] = []
-                    for step_name, _ in SIMULATED_PIPELINE_STEPS:
-                        step_record = existing_steps.get(step_name)
-                        if step_record is None:
-                            step_record = models.PipelineStep(
-                                run_id=session_obj.run_id,
-                                step_name=step_name,
-                                status="queued",
-                                progress=0,
-                            )
-                            session.add(step_record)
-                        else:
-                            step_record.status = "queued"
-                            step_record.progress = 0
-                            step_record.started_at = None
-                            step_record.finished_at = None
-                        pipeline_steps.append(step_record)
-
-                    await session.commit()
-
-                    total_steps = len(SIMULATED_PIPELINE_STEPS)
-
-                    for index, (step_name, step_runner) in enumerate(SIMULATED_PIPELINE_STEPS):
-                        step_record = pipeline_steps[index]
-                        step_record.status = "running"
-                        step_record.started_at = datetime.now(tz=timezone.utc)
-                        step_record.progress = 0
-
-                        session_obj.current_step = step_name
-                        session_obj.status = "running"
-                        session_obj.progress = int((index / total_steps) * 100)
-                        await session.commit()
-
-                        await step_runner()
-
-                        step_record.status = "completed"
-                        step_record.finished_at = datetime.now(tz=timezone.utc)
-                        step_record.progress = 100
-
-                        session_obj.progress = int(((index + 1) / total_steps) * 100)
-                        await session.commit()
-
-                    session_obj.status = "completed"
-                    session_obj.current_step = "completed"
-                    session_obj.finished_at = datetime.now(tz=timezone.utc)
-                    session_obj.progress = 100
-                    await session.commit()
+                    runner = SessionPipelineRunner(session)
+                    await runner.run(selected_session_id)
             finally:
                 with _ACTIVE_SESSION_LOCK:
                     _ACTIVE_SESSION_WORKERS.discard(selected_session_id)
