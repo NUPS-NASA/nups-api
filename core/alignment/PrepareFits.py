@@ -11,6 +11,8 @@ N_LABELS_PREVIEW, PREVIEW_PATH
 import os, glob, math, warnings
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Non-GUI backend
 import matplotlib.pyplot as plt
 
 from astropy.io import fits

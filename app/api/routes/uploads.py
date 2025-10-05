@@ -325,12 +325,20 @@ async def stage_uploads(
         preview_path = item_dir / "preview.png"
         _write_preview_image_from_fits(fits_path, preview_path)
 
+        def safe_header_dict(header):
+            safe = {}
+            for key in header.keys():
+                try:
+                    safe[key] = str(header[key])
+                except Exception:
+                    safe[key] = repr(header[key])
+            return safe
+        
         try:
             with fits.open(fits_path) as hdul:
-                header = dict(hdul[0].header)
+                header = safe_header_dict(hdul[0].header)
         except Exception:
             header = {}
-
         metadata = {
             "temp_id": temp_id,
             "tmp_fits": str(fits_path),
@@ -341,8 +349,10 @@ async def stage_uploads(
         }
 
         metadata_path = item_dir / "metadata.json"
-        metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
-
+        metadata_path.write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8"
+        )
         staged_items.append(
             schemas.TempUploadItem(
                 temp_id=temp_id,
