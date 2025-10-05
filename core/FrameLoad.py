@@ -1,9 +1,9 @@
-from config import (
+from .config import (
  LIGHT_DIR, BIAS_DIR, DARK_DIR, FLAT_DIR,
  USE_BIAS, USE_DARK, USE_FLAT,
  )
 import numpy as np
-from PrepareFits import (
+from .PrepareFits import (
  list_fits_in, build_master_bias, build_master_dark_by_exptime, build_master_flat,
 )
 

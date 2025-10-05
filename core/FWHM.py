@@ -1,6 +1,6 @@
 from astropy.modeling.models import Gaussian2D
 import numpy as np
-from PrepareFits import fits, load_fits_data, read_time_from_header
+from .PrepareFits import fits, load_fits_data, read_time_from_header
 
 def get_header_airmass_2(hdr):
     # AIRMASS 또는 SECZ(=airmass 근사) 사용

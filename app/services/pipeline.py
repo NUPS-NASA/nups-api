@@ -299,6 +299,13 @@ async def _step_lightcurve(ctx: PipelineContext, db: AsyncSession) -> dict[str, 
         ctx.reference_stars[:, :2]
         if ctx.reference_stars is not None
         else np.zeros((matrix.shape[1], 2))
+    comp_ids = pick_comps_rms_aware_general(
+        target_index,
+        matrix,
+        median_flux,
+        xy,
+        bright_tol=0.5,
+        k=max(min(20, matrix.shape[1] - 1) if matrix.shape[1] > 1 else 0, 3),
     )
 
     per_star_payload: dict[str, dict[str, Any]] = {}

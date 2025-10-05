@@ -1,4 +1,4 @@
-from config import (
+from .config import (
  LIGHT_DIR, BIAS_DIR, DARK_DIR, FLAT_DIR, OUTPUT_DIR,
  USE_BIAS, USE_DARK, USE_FLAT,
 DO_ALIGNMENT, SAVE_ALIGNED_FITS, ALIGNED_DIR,
@@ -11,6 +11,8 @@ N_LABELS_PREVIEW, PREVIEW_PATH
 import os, glob, math, warnings
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Non-GUI backend
 import matplotlib.pyplot as plt
 
 from astropy.io import fits
