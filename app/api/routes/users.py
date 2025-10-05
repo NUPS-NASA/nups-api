@@ -196,6 +196,27 @@ async def list_users(db: DBSession) -> list[schemas.UserRead]:
 
 
 @router.get(
+    "/me",
+    response_model=schemas.UserRead,
+    summary="Retrieve the authenticated user",
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Authentication required or token invalid.",
+        }
+    },
+)
+async def get_me(current_user: CurrentUser, db: DBSession) -> schemas.UserRead:
+    """Return the current authenticated user including profile information."""
+
+    user = await db.scalar(
+        _user_with_profile_query().where(models.User.id == current_user.id)
+    )
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user
+
+
+@router.get(
     "/{user_id}",
     response_model=schemas.UserRead,
     summary="Retrieve a user",
@@ -275,27 +296,6 @@ async def delete_user(user_id: int, db: DBSession) -> Response:
     await db.delete(user)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.get(
-    "/me",
-    response_model=schemas.UserRead,
-    summary="Retrieve the authenticated user",
-    responses={
-        status.HTTP_401_UNAUTHORIZED: {
-            "description": "Authentication required or token invalid.",
-        }
-    },
-)
-async def get_me(current_user: CurrentUser, db: DBSession) -> schemas.UserRead:
-    """Return the current authenticated user including profile information."""
-
-    user = await db.scalar(
-        _user_with_profile_query().where(models.User.id == current_user.id)
-    )
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    return user
 
 
 @router.get(

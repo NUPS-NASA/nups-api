@@ -247,6 +247,7 @@ async def star_repository(repository_id: int, db: DBSession, user_id: int = Quer
             models.StarredRepository.user_id == user_id,
         )
     )
+    print(existing)
     if existing is not None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
