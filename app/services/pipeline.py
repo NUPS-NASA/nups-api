@@ -22,7 +22,7 @@ from sqlalchemy.orm import selectinload
 
 from .. import models
 from ..config import get_settings
-from core.PrepareFits import (
+from core.alignment.PrepareFits import (
     calibrate_frame,
     detect_stars,
     load_fits_data,
@@ -32,13 +32,13 @@ from core.PrepareFits import (
     extract_exptime,
     median_combine,
 )
-from core.FWHM import get_header_airmass, estimate_frame_fwhm
-from core.Detrending import (
+from core.alignment.FWHM import get_header_airmass, estimate_frame_fwhm
+from core.alignment.Detrending import (
     detrend_by_covariates,
     pick_comps_rms_aware_general,
     weighted_reference,
 )
-from core.PrepareFits import align_to_reference
+from core.alignment.PrepareFits import align_to_reference
 
 logger = logging.getLogger(__name__)
 
@@ -382,10 +382,9 @@ async def _step_lightcurve(ctx: PipelineContext, db: AsyncSession) -> dict[str, 
     target_index = int(np.nanargmax(median_flux))
     ctx.target_index = target_index
 
-    xy = (
-        ctx.reference_stars[:, :2]
+    xy = ( ctx.reference_stars[:, :2]
         if ctx.reference_stars is not None
-        else np.zeros((matrix.shape[1], 2))
+        else np.zeros((matrix.shape[1], 2)))
     comp_ids = pick_comps_rms_aware_general(
         target_index,
         matrix,
@@ -418,7 +417,7 @@ async def _step_lightcurve(ctx: PipelineContext, db: AsyncSession) -> dict[str, 
 
         comp_ids = [int(idx) for idx in comp_ids if idx != star_index]
         if not comp_ids:
-            if star_index == target_index:
+            if  star_index == target_index:
                 raise RuntimeError("Not enough comparison stars identified for lightcurve")
             skipped += 1
             continue
