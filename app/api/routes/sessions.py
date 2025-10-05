@@ -59,6 +59,34 @@ async def get_latest_repo_session(repository_id: int, db: DBSession) -> schemas.
 
 
 @router.get(
+    "/repositories/{repository_id}/sessions/latest-with-steps",
+    response_model=schemas.RepositoryLatestSessionRead,
+    summary="Get latest session with pipeline steps for a repository",
+)
+async def get_latest_repo_session_with_steps(
+    repository_id: int, db: DBSession
+) -> schemas.RepositoryLatestSessionRead:
+    await _get_repository_or_404(repository_id, db)
+
+    session = await db.scalar(
+        select(models.Session)
+        .where(models.Session.repository_id == repository_id)
+        .order_by(models.Session.id.desc())
+        .limit(1)
+    )
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No session found")
+
+    steps_result = await db.scalars(
+        select(models.PipelineStep)
+        .where(models.PipelineStep.run_id == session.run_id)
+        .order_by(models.PipelineStep.step_id)
+    )
+
+    return schemas.RepositoryLatestSessionRead(session=session, steps=steps_result.all())
+
+
+@router.get(
     "/sessions/{session_id}",
     response_model=schemas.SessionRead,
     summary="Get session",
