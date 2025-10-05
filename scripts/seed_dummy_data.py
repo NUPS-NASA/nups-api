@@ -15,6 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from app.database import Base, SessionLocal, engine
+from sqlalchemy import insert
+
 from app.models import (
     Candidate,
     Data,
@@ -31,6 +33,7 @@ from app.models import (
     StarredRepository,
     User,
     UserProfile,
+    dataset_data_association,
 )
 from app.security import hash_password
 
@@ -235,6 +238,7 @@ async def seed_dummy_data() -> None:
                     captured_at=base_time + timedelta(days=index * version),
                 )
                 session.add(dataset)
+                await session.flush()
                 for data_idx in range(2):
                     data_hash = uuid.uuid4().hex
                     data_item = Data(
@@ -251,7 +255,13 @@ async def seed_dummy_data() -> None:
                         },
                     )
                     session.add(data_item)
-                    dataset.data_items.append(data_item)
+                    await session.flush()
+                    await session.execute(
+                        insert(dataset_data_association).values(
+                            dataset_id=dataset.id,
+                            data_id=data_item.id,
+                        )
+                    )
 
                     status = statuses[(index + version + data_idx) % len(statuses)]
                     start_time = base_time + timedelta(days=index, hours=data_idx * 3)

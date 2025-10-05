@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
 
 from ... import models, schemas
@@ -875,13 +875,18 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
         db.add(data_record)
         committed_preprocess.append(data_record)
 
-    # ---- Link all committed files to the dataset ----
-    for data_item in itertools.chain(committed_data, committed_preprocess):
-        dataset.data_items.append(data_item)
-
     # ---- Flush before creating relationships ----
     try:
         await db.flush()
+        association_payload = [
+            {"dataset_id": dataset.id, "data_id": data_item.id}
+            for data_item in itertools.chain(committed_data, committed_preprocess)
+        ]
+        if association_payload:
+            await db.execute(
+                insert(models.dataset_data_association),
+                association_payload,
+            )
     except IntegrityError as exc:
         await db.rollback()
         message = str(getattr(exc, "orig", exc))
