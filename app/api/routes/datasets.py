@@ -1,7 +1,7 @@
 """Dataset and data item endpoints."""
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
 from ... import models, schemas
 from ..dependencies import DBSession
@@ -21,6 +21,18 @@ async def _get_dataset_or_404(dataset_id: int, db: DBSession) -> models.Dataset:
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
     return dataset
+
+
+async def _link_dataset_and_data(
+    db: DBSession, dataset_id: int, data_id: int
+) -> None:
+    """Persist an association row between a dataset and a data item."""
+
+    await db.execute(
+        insert(models.dataset_data_association).values(
+            dataset_id=dataset_id, data_id=data_id
+        )
+    )
 
 
 @router.get(
@@ -116,8 +128,7 @@ async def create_data(payload: schemas.DataCreate, db: DBSession) -> schemas.Dat
         )
         if already_linked is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Dataset already contains the specified data item")
-
-        dataset.data_items.append(existing)
+        await _link_dataset_and_data(db, dataset.id, existing.id)
         await db.commit()
         await db.refresh(existing)
         setattr(existing, "dataset_id", dataset.id)
@@ -128,7 +139,8 @@ async def create_data(payload: schemas.DataCreate, db: DBSession) -> schemas.Dat
 
     data_item = models.Data(**payload_dict)
     db.add(data_item)
-    dataset.data_items.append(data_item)
+    await db.flush()
+    await _link_dataset_and_data(db, dataset.id, data_item.id)
     await db.commit()
     await db.refresh(data_item)
     setattr(data_item, "dataset_id", dataset.id)
