@@ -19,6 +19,9 @@ from sqlalchemy import insert
 
 from app.models import (
     Candidate,
+    CommunityComment,
+    CommunityPost,
+    CommunityPostLike,
     Data,
     Dataset,
     Denoise,
@@ -39,6 +42,13 @@ from app.security import hash_password
 
 
 UTC = timezone.utc
+
+
+def _paragraphs_to_html(content: str) -> str:
+    paragraphs = [line.strip() for line in content.split("\n") if line.strip()]
+    if not paragraphs:
+        return "<p></p>"
+    return "".join(f"<p>{paragraph}</p>" for paragraph in paragraphs)
 
 
 async def reset_schema(drop_existing: bool) -> None:
@@ -421,6 +431,153 @@ async def seed_dummy_data() -> None:
                     position=list(pinned_map.keys()).index(user_key) + 1,
                 )
             )
+
+        # --- Community posts, comments, and likes ---
+        community_specs = [
+            {
+                "title": "Aurora Watch: Solar Storm Update for Tonight",
+                "content": (
+                    "NOAA just bumped tonight's aurora forecast to G3 levels. If you're in mid-latitudes, "
+                    "swing your all-sky rigs north and watch the Kp charts after 22:00 UTC. Drop your captures "
+                    "in the gallery thread so we can stitch a global montage."
+                ),
+                "category": "announcements",
+                "author": "dimitri",
+                "project": "aurora",
+                "days_after": 35,
+                "likes": ["aria", "bianca", "casper"],
+                "comments": [
+                    {
+                        "author": "aria",
+                        "hours_after": 1.5,
+                        "content": "Thanks for the flare warning—I'll repoint the Kepler rigs for a few hours.",
+                    },
+                    {
+                        "author": "casper",
+                        "hours_after": 3.2,
+                        "content": "Cloud deck over Busan is thinning, hoping to grab at least a timelapse streak!",
+                    },
+                ],
+            },
+            {
+                "title": "Astrophoto Gallery: NGC 1300 Narrowband Composite",
+                "content": (
+                    "Stacked four clear nights of data from the Luna Lab queue using dual-narrowband filters. "
+                    "Sharing both the straight SHO and the blended HOO treatment for anyone teaching colour mapping."
+                ),
+                "category": "astrophoto-gallery",
+                "author": "casper",
+                "project": None,
+                "days_after": 34,
+                "likes": ["aria", "dimitri"],
+                "comments": [
+                    {
+                        "author": "bianca",
+                        "hours_after": 2.0,
+                        "content": "Would love to see the PixInsight flow you used—those dust lanes are razor sharp!",
+                    }
+                ],
+            },
+            {
+                "title": "Project HaloSpectra v2.1 Released",
+                "content": (
+                    "Batch inference now runs 30% faster with the new GPU profile presets. We also wired in the "
+                    "Mission Control vetting checklist so flagged candidates sync straight to review boards."
+                ),
+                "category": "project-showcase",
+                "author": "bianca",
+                "project": "kepler",
+                "days_after": 33,
+                "likes": ["aria", "dimitri"],
+                "comments": [
+                    {
+                        "author": "dimitri",
+                        "hours_after": 4.5,
+                        "content": "Great work—does this include the new dark-frame bootstrap we tested last week?",
+                    }
+                ],
+            },
+            {
+                "title": "Upload Hall of Fame: SpectraSuite Crosses 15k Downloads",
+                "content": (
+                    "Shout-out to everyone contributing spectral baselines—SpectraSuite passed 15k downloads this "
+                    "morning. Share your favourite automations so we can feature them in the onboarding docs."
+                ),
+                "category": "upload-hall-of-fame",
+                "author": "aria",
+                "project": "transient",
+                "days_after": 32,
+                "likes": ["bianca", "dimitri"],
+                "comments": [],
+            },
+            {
+                "title": "Mission Briefing: October Deep Field Campaign",
+                "content": (
+                    "Kicking off a month-long cadence focused on M31 satellite candidates. We'll sync on Thursday to "
+                    "finalise exposure presets and decide which observatories take the late-night windows."
+                ),
+                "category": "announcements",
+                "author": "aria",
+                "project": None,
+                "days_after": 31,
+                "likes": ["bianca", "casper"],
+                "comments": [],
+            },
+            {
+                "title": "Lunar Occultation Tracker Beta Seeking Observers",
+                "content": (
+                    "We just pushed the beta predictor for lunar occultations of bright radio sources. Looking for "
+                    "Asia-Pacific observers to validate tomorrow night's ephemerides—DM if you can cover 12-16 UTC."
+                ),
+                "category": "project-showcase",
+                "author": "casper",
+                "project": "lunar",
+                "days_after": 30,
+                "likes": ["aria"],
+                "comments": [
+                    {
+                        "author": "dimitri",
+                        "hours_after": 2.3,
+                        "content": "Can route the Santiago dish for a cross-check if you share the tracking script.",
+                    }
+                ],
+            },
+        ]
+
+        for spec in community_specs:
+            created_at = base_time + timedelta(days=spec["days_after"])
+            content_html = _paragraphs_to_html(spec["content"])
+            post = CommunityPost(
+                title=spec["title"],
+                content=content_html,
+                category=spec["category"],
+                author=users[spec["author"]],
+                linked_project=projects.get(spec["project"]) if spec["project"] else None,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+            session.add(post)
+            await session.flush()
+
+            for comment_spec in spec["comments"]:
+                comment_created_at = created_at + timedelta(hours=comment_spec.get("hours_after", 2))
+                session.add(
+                    CommunityComment(
+                        post=post,
+                        author=users[comment_spec["author"]],
+                        content=comment_spec["content"],
+                        created_at=comment_created_at,
+                    )
+                )
+
+            for like_key in spec["likes"]:
+                session.add(
+                    CommunityPostLike(
+                        post_id=post.id,
+                        user_id=users[like_key].id,
+                        liked_at=created_at + timedelta(hours=1),
+                    )
+                )
 
         await session.commit()
 

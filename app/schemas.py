@@ -8,6 +8,130 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 # -----------------------
+# Community schemas
+# -----------------------
+
+
+CommunityPostCategory = Literal[
+    "announcements",
+    "project-showcase",
+    "astrophoto-gallery",
+    "upload-hall-of-fame",
+]
+
+COMMUNITY_POST_CATEGORIES = get_args(CommunityPostCategory)
+
+
+class CommunityUserSummary(BaseModel):
+    id: int
+    display_name: str = Field(description="Display name resolved from profile bio or email.")
+    avatar_url: str | None = Field(
+        default=None,
+        description="User avatar URL sourced from the profile when available.",
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommunityCommentCreate(BaseModel):
+    content: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Markdown-compatible content body for the comment.",
+    )
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "example": {
+                "content": "The OIII layer really pops—what exposure length did you settle on?",
+            }
+        },
+    )
+
+
+class CommunityCommentRead(BaseModel):
+    id: int
+    content: str
+    created_at: datetime
+    author: CommunityUserSummary
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommunityPostCreate(BaseModel):
+    title: str = Field(
+        min_length=3,
+        max_length=200,
+        description="Short headline describing the community update.",
+    )
+    content: str = Field(
+        min_length=1,
+        description="Rich text content encoded as HTML.",
+    )
+    category: CommunityPostCategory = Field(
+        description="High-level category used for filtering tabs.",
+    )
+    linked_project_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional project to associate with the post.",
+    )
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "example": {
+                "title": "Mission Briefing: October Deep Field Campaign",
+                "content": "<p>We're kicking off our deep field cadence—share your availability!</p>",
+                "category": "announcements",
+                "linked_project_id": 12,
+            }
+        },
+    )
+
+
+class CommunityPostRead(BaseModel):
+    id: int
+    title: str
+    content: str
+    category: CommunityPostCategory
+    created_at: datetime
+    updated_at: datetime
+    author: CommunityUserSummary
+    likes_count: int = Field(
+        default=0,
+        description="Aggregated number of users who liked the post.",
+    )
+    liked: bool = Field(
+        default=False,
+        description="Whether the requesting user has liked the post.",
+    )
+    comments: list[CommunityCommentRead] = Field(
+        default_factory=list,
+        description="Chronologically ordered comment thread for the post.",
+    )
+    linked_project: "ProjectRead | None" = Field(
+        default=None,
+        description="Optional project attached to the community update.",
+    )
+    can_delete: bool = Field(
+        default=False,
+        description="Whether the requesting user may delete this post.",
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommunityPostLikeStatus(BaseModel):
+    post_id: int = Field(description="Community post identifier.")
+    liked: bool = Field(description="Current like status for the requesting user.")
+    likes_count: int = Field(description="Total number of likes for the post.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# -----------------------
 # User & profile schemas
 # -----------------------
 

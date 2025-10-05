@@ -51,6 +51,10 @@ TAGS_METADATA = [
         "description": "Project catalogue with CRUD operations, membership management, and search helpers.",
     },
     {
+        "name": "community",
+        "description": "Share mission updates, announcements, and discussions with optional project links.",
+    },
+    {
         "name": "pins",
         "description": "Manage a user's pinned project showcase including ordering and removal.",
     },

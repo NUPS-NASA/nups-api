@@ -2,7 +2,17 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .api.routes import datasets, health, projects, repositories, sessions, stats, uploads, users
+from .api.routes import (
+    community,
+    datasets,
+    health,
+    projects,
+    repositories,
+    sessions,
+    stats,
+    uploads,
+    users,
+)
 from .config import get_settings
 from .database import Base, engine
 from .docs import (
@@ -51,6 +61,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router, prefix="/api")
     app.include_router(stats.router, prefix="/api")
     app.include_router(uploads.router, prefix="/api")
+    app.include_router(community.router, prefix="/api")
 
     return app
 

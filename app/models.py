@@ -119,6 +119,30 @@ class User(Base):
     pinned_projects: Mapped[list["PinnedProject"]] = relationship(
         back_populates="user",
     )
+    community_posts: Mapped[list["CommunityPost"]] = relationship(
+        back_populates="author",
+        cascade="all, delete-orphan",
+    )
+    community_comments: Mapped[list["CommunityComment"]] = relationship(
+        back_populates="author",
+        cascade="all, delete-orphan",
+    )
+    liked_community_posts: Mapped[list["CommunityPostLike"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    @property
+    def display_name(self) -> str:
+        if self.profile and self.profile.bio:
+            return self.profile.bio
+        return self.email
+
+    @property
+    def avatar_url(self) -> str | None:
+        if self.profile:
+            return self.profile.avatar_url
+        return None
 
 
 class UserProfile(Base):
@@ -229,6 +253,9 @@ class Project(Base):
     pinned_by: Mapped[list["PinnedProject"]] = relationship(
         back_populates="project",
     )
+    community_posts: Mapped[list["CommunityPost"]] = relationship(
+        back_populates="linked_project",
+    )
 
 
 class ProjectRepository(Base):
@@ -322,6 +349,89 @@ class PinnedProject(Base):
 
     user: Mapped[User] = relationship(back_populates="pinned_projects")
     project: Mapped[Project] = relationship(back_populates="pinned_by")
+
+
+class CommunityPost(Base):
+    """Community announcement or discussion entry."""
+
+    __tablename__ = "community_posts"
+
+    id: Mapped[int] = mapped_column(
+        BIGINT_PK, primary_key=True, index=True, autoincrement=True
+    )
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    linked_project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    author: Mapped[User] = relationship(back_populates="community_posts")
+    linked_project: Mapped["Project | None"] = relationship(back_populates="community_posts")
+    comments: Mapped[list["CommunityComment"]] = relationship(
+        back_populates="post",
+        cascade="all, delete-orphan",
+        order_by="CommunityComment.created_at",
+    )
+    likes: Mapped[list["CommunityPostLike"]] = relationship(
+        back_populates="post",
+        cascade="all, delete-orphan",
+    )
+
+
+class CommunityComment(Base):
+    """Comment left on a community post."""
+
+    __tablename__ = "community_comments"
+
+    id: Mapped[int] = mapped_column(
+        BIGINT_PK, primary_key=True, index=True, autoincrement=True
+    )
+    post_id: Mapped[int] = mapped_column(
+        ForeignKey("community_posts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    post: Mapped[CommunityPost] = relationship(back_populates="comments")
+    author: Mapped[User] = relationship(back_populates="community_comments")
+
+
+class CommunityPostLike(Base):
+    """User like flag for a community post."""
+
+    __tablename__ = "community_post_likes"
+
+    post_id: Mapped[int] = mapped_column(
+        ForeignKey("community_posts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    liked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    post: Mapped[CommunityPost] = relationship(back_populates="likes")
+    user: Mapped[User] = relationship(back_populates="liked_community_posts")
 
 
 class Dataset(Base):
