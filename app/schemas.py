@@ -631,13 +631,9 @@ class SessionRead(SessionSummary):
         default=None,
         description="Dataset associated with the session.",
     )
-    data_id: int | None = Field(
-        default=None,
-        description="Data item processed by the session.",
-    )
     data_version: int | None = Field(
         default=None,
-        description="Version value tracked for the data item when the session ran.",
+        description="Dataset version value tracked when the session ran.",
     )
 
     model_config = ConfigDict(from_attributes=True)
@@ -703,7 +699,10 @@ class UploadCommitResponse(BaseModel):
         default_factory=DatasetPreprocessGroup,
         description="Preprocessing files grouped by calibration category.",
     )
-    sessions: list[SessionRead] = Field(description="Sessions spawned for each committed data item.")
+    session: SessionRead | None = Field(
+        default=None,
+        description="Processing session spawned to analyze the committed dataset.",
+    )
 
     model_config = ConfigDict(extra="forbid")
 

@@ -271,15 +271,6 @@ def _unique_target(base_path: Path, suffix: str) -> Path:
         if not renamed.exists():
             return renamed
         counter += 1
-
-
-def _start_session_worker(session_ids: list[int]) -> None:
-    """Launch background workers for the provided session IDs."""
-
-    for session_id in session_ids:
-        _start_single_session_worker(session_id)
-
-
 def _start_single_session_worker(session_id: int) -> None:
     """Launch a background worker for a single session if it's not already running."""
 
@@ -529,7 +520,7 @@ async def stage_uploads(
     summary="Commit staged FITS files into a repository",
 )
 async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) -> schemas.UploadCommitResponse:
-    """Persist staged uploads by creating repository metadata and launching sessions."""
+    """Persist staged uploads by creating repository metadata and launching a session."""
 
     # ---- Basic validation ----
     if not payload.items:
@@ -927,24 +918,23 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
             ) from exc
         raise
 
-    # ---- Create processing sessions ----
-    sessions: list[models.Session] = []
-    for data_item in committed_data:
+    # ---- Create processing session ----
+    session_model: models.Session | None = None
+    session_id: int | None = None
+
+    if committed_data:
         session_model = models.Session(
             run_id=uuid.uuid4(),
             repository_id=repository.id,
             dataset_id=dataset.id,
-            data_id=data_item.id,
             data_version=dataset.version,
             current_step=None,
             status="queued",
             progress=0,
         )
         db.add(session_model)
-        sessions.append(session_model)
-
-    await db.flush()
-    session_ids = [session_model.id for session_model in sessions]
+        await db.flush()
+        session_id = session_model.id
 
     await db.commit()
 
@@ -957,15 +947,15 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
     for _, data_item in committed_preprocess:
         await db.refresh(data_item)
         setattr(data_item, "dataset_id", dataset.id)
-    for session_model in sessions:
+    if session_model is not None:
         await db.refresh(session_model)
 
     setattr(repository, "starred", False)
     setattr(repository, "session", None)
 
     # ---- Start background worker ----
-    if session_ids:
-        _start_session_worker(session_ids)
+    if session_id is not None:
+        _start_single_session_worker(session_id)
 
     preprocess_data_items = [data_item for _, data_item in committed_preprocess]
     preprocess_grouped = {
@@ -982,7 +972,7 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
         data=committed_data,
         preprocess_data=preprocess_data_items,
         preprocess_grouped=schemas.DatasetPreprocessGroup(**preprocess_grouped),
-        sessions=sessions,
+        session=session_model,
     )
 
 

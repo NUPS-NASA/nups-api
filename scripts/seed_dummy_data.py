@@ -263,80 +263,78 @@ async def seed_dummy_data() -> None:
                         )
                     )
 
-                    status = statuses[(index + version + data_idx) % len(statuses)]
-                    start_time = base_time + timedelta(days=index, hours=data_idx * 3)
-                    finish_time = (
-                        start_time + timedelta(minutes=45 + (data_idx * 10))
-                        if status == "completed"
-                        else None
-                    )
-                    run_id = uuid.uuid4()
-                    pipeline_session = PipelineSession(
+                status = statuses[(index + version) % len(statuses)]
+                start_time = base_time + timedelta(days=index)
+                finish_time = (
+                    start_time + timedelta(minutes=60)
+                    if status == "completed"
+                    else None
+                )
+                run_id = uuid.uuid4()
+                template = pipeline_templates[(index + version) % len(pipeline_templates)]
+                pipeline_session = PipelineSession(
+                    run_id=run_id,
+                    repository=repo,
+                    dataset=dataset,
+                    data_version=dataset.version,
+                    current_step=template[-1]["name"],
+                    status=status,
+                    progress=85 if status == "completed" else 40 if status == "running" else 10,
+                    started_at=start_time,
+                    finished_at=finish_time,
+                )
+                session.add(pipeline_session)
+
+                # Pipeline steps mirror the templates but adapt status variations.
+                for order, step in enumerate(template, start=1):
+                    step_status = step["status"]
+                    if status == "failed" and step["name"] == "denoise":
+                        step_status = "failed"
+                    pipeline_step = PipelineStep(
                         run_id=run_id,
-                        repository=repo,
-                        dataset=dataset,
-                        data=data_item,
-                        data_version=dataset.version,
-                        current_step=pipeline_templates[data_idx % len(pipeline_templates)][-1]["name"],
-                        status=status,
-                        progress=85 if status == "completed" else 40 if status == "running" else 10,
-                        started_at=start_time,
-                        finished_at=finish_time,
+                        step_name=step["name"],
+                        status=step_status,
+                        progress=min(100, order * 40),
+                        data={"order": order},
+                        log=f"{step['name']} step auto-generated for seed data.",
+                        started_at=start_time + timedelta(minutes=order * 5),
+                        finished_at=(
+                            start_time + timedelta(minutes=order * 12)
+                            if step_status in {"completed", "failed"}
+                            else None
+                        ),
                     )
-                    session.add(pipeline_session)
+                    session.add(pipeline_step)
 
-                    # Pipeline steps mirror the templates but adapt status variations.
-                    for order, step in enumerate(
-                        pipeline_templates[data_idx % len(pipeline_templates)], start=1
-                    ):
-                        step_status = step["status"]
-                        if status == "failed" and step["name"] == "denoise":
-                            step_status = "failed"
-                        pipeline_step = PipelineStep(
-                            run_id=run_id,
-                            step_name=step["name"],
-                            status=step_status,
-                            progress=min(100, order * 40),
-                            data={"order": order},
-                            log=f"{step['name']} step auto-generated for seed data.",
-                            started_at=start_time + timedelta(minutes=order * 5),
-                            finished_at=(
-                                start_time + timedelta(minutes=order * 12)
-                                if step_status in {"completed", "failed"}
-                                else None
-                            ),
+                # Attach optional analysis records for completed runs.
+                if status == "completed":
+                    session.add(
+                        Lightcurve(
+                            session=pipeline_session,
+                            data={"points": [random.random() for _ in range(5)]},
                         )
-                        session.add(pipeline_step)
-
-                    # Attach optional analysis records for completed runs.
-                    if status == "completed":
-                        session.add(
-                            Lightcurve(
-                                session=pipeline_session,
-                                data={"points": [random.random() for _ in range(5)]},
-                            )
+                    )
+                    session.add(
+                        Denoise(
+                            session=pipeline_session,
+                            data={"smoothing_factor": 0.42},
                         )
-                        session.add(
-                            Denoise(
-                                session=pipeline_session,
-                                data={"smoothing_factor": 0.42},
-                            )
+                    )
+                    session.add(
+                        Candidate(
+                            session=pipeline_session,
+                            data={"score": 0.91},
+                            is_verified=True,
                         )
-                        session.add(
-                            Candidate(
-                                session=pipeline_session,
-                                data={"score": 0.91},
-                                is_verified=True,
-                            )
+                    )
+                elif status == "failed":
+                    session.add(
+                        Candidate(
+                            session=pipeline_session,
+                            data={"score": 0.12},
+                            is_verified=False,
                         )
-                    elif status == "failed":
-                        session.add(
-                            Candidate(
-                                session=pipeline_session,
-                                data={"score": 0.12},
-                                is_verified=False,
-                            )
-                        )
+                    )
 
         await session.flush()
 
