@@ -11,7 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import FileResponse
@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ... import models, schemas
 from ...config import get_settings
+from ...core import PipelineStepDefinition, get_default_pipeline
 from ...database import SessionLocal
 from ..dependencies import DBSession
 
@@ -212,45 +213,7 @@ def _hash_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-async def _simulate_step_runtime(seconds: int) -> None:
-    """Sleep in one-second increments to emulate long-running work."""
-
-    for _ in range(seconds):
-        await asyncio.sleep(1)
-
-
-async def _step_ingest() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_calibration() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_registration() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_photometry() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_classification() -> None:
-    await _simulate_step_runtime(10)
-
-
-async def _step_reporting() -> None:
-    await _simulate_step_runtime(10)
-
-
-SIMULATED_PIPELINE_STEPS: list[tuple[str, Callable[[], Awaitable[None]]]] = [
-    ("ingest", _step_ingest),
-    ("calibration", _step_calibration),
-    ("registration", _step_registration),
-    ("photometry", _step_photometry),
-    ("classification", _step_classification),
-    ("reporting", _step_reporting),
-]
+SIMULATED_PIPELINE_STEPS: tuple[PipelineStepDefinition, ...] = get_default_pipeline()
 
 _ACTIVE_SESSION_LOCK = threading.Lock()
 _ACTIVE_SESSION_WORKERS: set[int] = set()
@@ -309,7 +272,7 @@ def _start_single_session_worker(session_id: int) -> None:
                         return
 
                     session_obj.status = "running"
-                    session_obj.current_step = SIMULATED_PIPELINE_STEPS[0][0]
+                    session_obj.current_step = SIMULATED_PIPELINE_STEPS[0].name
                     session_obj.started_at = session_obj.started_at or datetime.now(tz=timezone.utc)
                     session_obj.progress = 0
                     await session.commit()
@@ -321,12 +284,12 @@ def _start_single_session_worker(session_id: int) -> None:
                     existing_steps = {step.step_name: step for step in result}
 
                     pipeline_steps: list[models.PipelineStep] = []
-                    for step_name, _ in SIMULATED_PIPELINE_STEPS:
-                        step_record = existing_steps.get(step_name)
+                    for step_definition in SIMULATED_PIPELINE_STEPS:
+                        step_record = existing_steps.get(step_definition.name)
                         if step_record is None:
                             step_record = models.PipelineStep(
                                 run_id=session_obj.run_id,
-                                step_name=step_name,
+                                step_name=step_definition.name,
                                 status="queued",
                                 progress=0,
                             )
@@ -342,18 +305,18 @@ def _start_single_session_worker(session_id: int) -> None:
 
                     total_steps = len(SIMULATED_PIPELINE_STEPS)
 
-                    for index, (step_name, step_runner) in enumerate(SIMULATED_PIPELINE_STEPS):
+                    for index, step_definition in enumerate(SIMULATED_PIPELINE_STEPS):
                         step_record = pipeline_steps[index]
                         step_record.status = "running"
                         step_record.started_at = datetime.now(tz=timezone.utc)
                         step_record.progress = 0
 
-                        session_obj.current_step = step_name
+                        session_obj.current_step = step_definition.name
                         session_obj.status = "running"
                         session_obj.progress = int((index / total_steps) * 100)
                         await session.commit()
 
-                        await step_runner()
+                        await step_definition.runner()
 
                         step_record.status = "completed"
                         step_record.finished_at = datetime.now(tz=timezone.utc)
