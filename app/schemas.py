@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date as Date, datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -476,6 +477,9 @@ class DataRead(BaseModel):
 
 from pydantic import BaseModel, Field, ConfigDict
 
+PreprocessCategory = Literal["dark", "bias", "flat"]
+
+
 class TempUploadItem(BaseModel):
     temp_id: str = Field(
         description="Unique identifier for the staged upload item."
@@ -512,6 +516,50 @@ class TempUploadItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TempPreprocessItem(BaseModel):
+    temp_id: str = Field(description="Identifier for the staged preprocessing artifact.")
+    category: PreprocessCategory = Field(description="Preprocessing category represented by the file.")
+    filename: str = Field(description="Original filename captured during staging.")
+    size_bytes: int = Field(description="Size of the uploaded file in bytes.")
+    temp_path: str = Field(description="Temporary filesystem path for the staged preprocessing file.")
+    tmp_png: str | None = Field(
+        default=None,
+        description="Optional preview image path for the staged preprocessing file.",
+    )
+    metadata_json: dict | None = Field(
+        default=None,
+        description="Additional metadata recorded for the preprocessing file.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StageUploadsResponse(BaseModel):
+    items: list[TempUploadItem] = Field(description="Staged science exposure files.")
+    preprocess: dict[PreprocessCategory, list[TempPreprocessItem]] = Field(
+        default_factory=dict,
+        description="Staged preprocessing files grouped by category.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class UploadPreprocessCommitItem(BaseModel):
+    temp_id: str = Field(description="Identifier of the staged preprocessing item.")
+    category: PreprocessCategory = Field(description="Preprocessing category for the staged file.")
+    temp_path: str = Field(description="Temporary path of the staged preprocessing file.")
+    original_name: str | None = Field(
+        default=None,
+        description="Original filename to persist for the preprocessing file.",
+    )
+    metadata_json: dict | None = Field(
+        default=None,
+        description="Metadata supplied for the preprocessing file during commit.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class UploadCommitItem(BaseModel):
     temp_id: str = Field(description="Identifier of the staged item being committed.")
     fits_temp_path: str = Field(description="Temporary path of the staged FITS file.")
@@ -543,6 +591,10 @@ class UploadCommitRequest(BaseModel):
         description="Optional capture timestamp for the resulting dataset.",
     )
     items: list[UploadCommitItem] = Field(description="Staged upload items to commit.")
+    preprocess_items: list[UploadPreprocessCommitItem] | None = Field(
+        default=None,
+        description="Staged preprocessing files to persist alongside the dataset.",
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -624,7 +676,11 @@ class CandidateVerifyUpdate(BaseModel):
 class UploadCommitResponse(BaseModel):
     repository: RepositoryRead = Field(description="Repository created during commit.")
     dataset: DatasetRead = Field(description="Dataset that stores the committed data items.")
-    data: list[DataRead] = Field(description="Committed data items persisted to storage.")
+    data: list[DataRead] = Field(description="Committed science exposure items persisted to storage.")
+    preprocess_data: list[DataRead] = Field(
+        default_factory=list,
+        description="Committed preprocessing files persisted to storage.",
+    )
     sessions: list[SessionRead] = Field(description="Sessions spawned for each committed data item.")
 
     model_config = ConfigDict(extra="forbid")
@@ -694,10 +750,13 @@ __all__ = [
     "SessionRead",
     "SessionSummary",
     "StarRead",
+    "StageUploadsResponse",
     "TempUploadItem",
+    "TempPreprocessItem",
     "UploadCommitItem",
     "UploadCommitRequest",
     "UploadCommitResponse",
+    "UploadPreprocessCommitItem",
     "UserCreate",
     "UserLogin",
     "UserProfileCreate",

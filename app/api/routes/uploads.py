@@ -7,6 +7,7 @@ import json
 import shutil
 import threading
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -199,6 +200,18 @@ def _ensure_path_within(path: Path, parent: Path) -> None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid temporary path") from exc
 
 
+def _hash_file(path: Path) -> str:
+    """Return the SHA256 hex digest for the provided file path."""
+
+    hasher = sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 async def _simulate_step_runtime(seconds: int) -> None:
     """Sleep in one-second increments to emulate long-running work."""
 
@@ -241,6 +254,8 @@ SIMULATED_PIPELINE_STEPS: list[tuple[str, Callable[[], Awaitable[None]]]] = [
 
 _ACTIVE_SESSION_LOCK = threading.Lock()
 _ACTIVE_SESSION_WORKERS: set[int] = set()
+
+PREPROCESS_CATEGORY_KEYS = ("dark", "bias", "flat")
 
 
 def _unique_target(base_path: Path, suffix: str) -> Path:
@@ -389,16 +404,22 @@ async def _get_user_or_404(user_id: int, db: DBSession) -> models.User:
 
 @router.post(
     "/uploads/prepare",
-    response_model=list[schemas.TempUploadItem],
+    response_model=schemas.StageUploadsResponse,
     summary="Stage FITS files for review",
 )
-async def stage_uploads(files: list[UploadFile] = File(...)) -> list[schemas.TempUploadItem]:
+async def stage_uploads(
+    files: list[UploadFile] = File(...),
+    dark_files: list[UploadFile] | None = File(default=None),
+    bias_files: list[UploadFile] | None = File(default=None),
+    flat_files: list[UploadFile] | None = File(default=None),
+) -> schemas.StageUploadsResponse:
     """Store uploaded FITS files in a temporary location and return metadata."""
 
     if not files:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files provided")
 
     staged_items: list[schemas.TempUploadItem] = []
+    staged_preprocess: dict[str, list[schemas.TempPreprocessItem]] = defaultdict(list)
 
     for upload in files:
         temp_id = uuid.uuid4().hex
@@ -410,19 +431,19 @@ async def stage_uploads(files: list[UploadFile] = File(...)) -> list[schemas.Tem
         preview_path = item_dir / "preview.png"
         _write_preview_image_from_fits(fits_path, preview_path)
 
-        # Extract FITS header info
         try:
             with fits.open(fits_path) as hdul:
                 header = dict(hdul[0].header)
         except Exception:
             header = {}
 
-        # ✅ Store richer metadata: tmp paths + FITS header info
         metadata = {
             "temp_id": temp_id,
             "tmp_fits": str(fits_path),
             "tmp_png": str(preview_path),
-            "fits_header": header,  # Include all header cards
+            "fits_header": header,
+            "original_filename": original_name,
+            "data_kind": "observation",
         }
 
         metadata_path = item_dir / "metadata.json"
@@ -434,14 +455,62 @@ async def stage_uploads(files: list[UploadFile] = File(...)) -> list[schemas.Tem
                 filename=original_name,
                 size_bytes=size_bytes,
                 content_type=upload.content_type,
-                tmp_fits=str(fits_path),      
-                tmp_png=str(preview_path),    
-                fits_header=header,           
+                tmp_fits=str(fits_path),
+                tmp_png=str(preview_path),
+                fits_header=header,
                 metadata_json=metadata,
             )
-
         )
-    return staged_items
+
+    preprocess_inputs = {
+        "dark": dark_files or [],
+        "bias": bias_files or [],
+        "flat": flat_files or [],
+    }
+
+    for category, uploads in preprocess_inputs.items():
+        for upload in uploads:
+            temp_id = uuid.uuid4().hex
+            item_dir = TEMP_DIR / temp_id
+            original_name = upload.filename or f"{category}_{temp_id}.fits"
+            fits_path = item_dir / original_name
+
+            size_bytes = await _save_upload_file(upload, fits_path)
+            preview_path = item_dir / "preview.png"
+            _write_preview_image_from_fits(fits_path, preview_path)
+
+            try:
+                with fits.open(fits_path) as hdul:
+                    header = dict(hdul[0].header)
+            except Exception:
+                header = {}
+
+            metadata = {
+                "temp_id": temp_id,
+                "tmp_fits": str(fits_path),
+                "tmp_png": str(preview_path),
+                "fits_header": header,
+                "original_filename": original_name,
+                "data_kind": "preprocess",
+                "preprocess_category": category,
+            }
+
+            metadata_path = item_dir / "metadata.json"
+            metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+
+            staged_preprocess[category].append(
+                schemas.TempPreprocessItem(
+                    temp_id=temp_id,
+                    category=category,
+                    filename=original_name,
+                    size_bytes=size_bytes,
+                    temp_path=str(fits_path),
+                    tmp_png=str(preview_path),
+                    metadata_json=metadata,
+                )
+            )
+
+    return schemas.StageUploadsResponse(items=staged_items, preprocess=dict(staged_preprocess))
 
 
 @router.post(
@@ -511,22 +580,25 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
             if candidate_image.exists():
                 image_temp_path = candidate_image
 
-        metadata = item.metadata_json or _load_temp_metadata(temp_item_dir) or {}
-        fits_metadata = item.fits_data_json or metadata or {}
+        metadata_source = item.metadata_json or _load_temp_metadata(temp_item_dir) or {}
+        if not isinstance(metadata_source, dict):
+            metadata_source = {}
+        metadata = dict(metadata_source)
+        metadata.setdefault("data_kind", "observation")
+        metadata.setdefault("original_filename", fits_temp_path.name)
 
-        original_name = metadata.get("original_filename") if isinstance(metadata, dict) else None
+        fits_metadata_source = item.fits_data_json or metadata_source or {}
+        if not isinstance(fits_metadata_source, dict):
+            fits_metadata_source = {}
+        fits_metadata = dict(fits_metadata_source)
+
+        original_name = item.metadata_json.get("original_filename") if item.metadata_json else None
         if not original_name:
-            original_name = fits_temp_path.name
+            original_name = metadata.get("original_filename", fits_temp_path.name)
 
-        # ---- Calculate SHA256 hash ----
-        hasher = sha256()
-        with fits_temp_path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                if not chunk:
-                    break
-                hasher.update(chunk)
+        metadata["original_filename"] = original_name
 
-        data_hash = hasher.hexdigest()
+        data_hash = _hash_file(fits_temp_path)
 
         if data_hash in seen_hashes:
             await db.rollback()
@@ -565,11 +637,109 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
             }
         )
 
+    preprocess_pending: list[dict[str, Any]] = []
+
+    for preprocess_item in payload.preprocess_items or []:
+        if preprocess_item.category not in PREPROCESS_CATEGORY_KEYS:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported preprocessing category: {preprocess_item.category}",
+            )
+
+        preprocess_temp_path = Path(preprocess_item.temp_path).expanduser().resolve()
+        _ensure_path_within(preprocess_temp_path, TEMP_DIR)
+
+        if not preprocess_temp_path.exists():
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Temporary preprocessing file not found for {preprocess_item.temp_id}",
+            )
+
+        temp_item_dir = preprocess_temp_path.parent
+
+        metadata_source = preprocess_item.metadata_json or _load_temp_metadata(temp_item_dir) or {}
+        if not isinstance(metadata_source, dict):
+            metadata_source = {}
+
+        metadata = dict(metadata_source)
+        metadata.setdefault("data_kind", "preprocess")
+        metadata.setdefault("preprocess_category", preprocess_item.category)
+        metadata.setdefault("temp_id", preprocess_item.temp_id)
+
+        fits_metadata_source = metadata_source.get("fits_header") if isinstance(metadata_source, dict) else None
+        if preprocess_item.metadata_json and "fits_header" in preprocess_item.metadata_json:
+            fits_metadata_source = preprocess_item.metadata_json["fits_header"]
+        fits_metadata = dict(fits_metadata_source) if isinstance(fits_metadata_source, dict) else None
+
+        original_name = (
+            preprocess_item.original_name
+            or metadata.get("original_filename")
+            or preprocess_temp_path.name
+        )
+        metadata["original_filename"] = original_name
+
+        preview_temp_path: Path | None = None
+        preview_candidate = metadata.get("tmp_png")
+        if isinstance(preview_candidate, str):
+            try:
+                preview_path = Path(preview_candidate).expanduser().resolve()
+                _ensure_path_within(preview_path, TEMP_DIR)
+            except HTTPException:
+                preview_temp_path = None
+            else:
+                preview_temp_path = preview_path if preview_path.exists() else None
+        metadata["tmp_png"] = str(preview_temp_path) if preview_temp_path else None
+
+        data_hash = _hash_file(preprocess_temp_path)
+
+        if data_hash in seen_hashes:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Duplicate file content detected in preprocessing payload for {preprocess_item.temp_id}",
+            )
+        seen_hashes.add(data_hash)
+
+        existing_data = await db.scalar(
+            select(models.Data).where(models.Data.hash == data_hash)
+        )
+
+        pending_entry = {
+            "category": preprocess_item.category,
+            "temp_item_dir": temp_item_dir,
+            "preprocess_temp_path": preprocess_temp_path,
+            "preview_temp_path": preview_temp_path,
+        }
+
+        if existing_data is not None:
+            pending_entry.update(
+                {
+                    "status": "existing",
+                    "data": existing_data,
+                }
+            )
+            preprocess_pending.append(pending_entry)
+            continue
+
+        pending_entry.update(
+            {
+                "status": "new",
+                "metadata": metadata,
+                "fits_metadata": fits_metadata,
+                "original_name": original_name,
+                "hash": data_hash,
+            }
+        )
+        preprocess_pending.append(pending_entry)
+
     # ---- Move FITS files into permanent storage ----
     target_dir = DATA_DIR / f"repository_{repository.id}" / f"dataset_{dataset.version}"
     target_dir.mkdir(parents=True, exist_ok=True)
 
     committed_data: list[models.Data] = []
+    committed_preprocess: list[models.Data] = []
 
     for pending in pending_items:
         item_status = pending["status"]
@@ -614,6 +784,18 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
         shutil.rmtree(temp_item_dir, ignore_errors=True)
 
         # ---- Create new Data record ----
+        metadata = dict(metadata)
+        metadata.setdefault("data_kind", "observation")
+        metadata["original_filename"] = original_name
+        metadata.pop("tmp_fits", None)
+        metadata.pop("tmp_png", None)
+        metadata["stored_fits_path"] = str(fits_dest)
+        if preview_dest is not None:
+            metadata["stored_preview_path"] = str(preview_dest)
+
+        if isinstance(fits_metadata, dict):
+            fits_metadata = dict(fits_metadata)
+
         data_record = models.Data(
             hash=pending["hash"],
             fits_original_path=str(fits_dest),
@@ -623,6 +805,74 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
         )
         db.add(data_record)
         committed_data.append(data_record)
+
+    calibration_root = target_dir / "calibration"
+
+    for pending in preprocess_pending:
+        temp_item_dir = pending["temp_item_dir"]
+        preprocess_temp_path = pending["preprocess_temp_path"]
+        preview_temp_path = pending.get("preview_temp_path")
+        category = pending["category"]
+
+        if pending["status"] == "existing":
+            data_record = pending["data"]
+            committed_preprocess.append(data_record)
+
+            if preprocess_temp_path.exists():
+                preprocess_temp_path.unlink(missing_ok=True)
+            if preview_temp_path is not None and preview_temp_path.exists():
+                preview_temp_path.unlink(missing_ok=True)
+            shutil.rmtree(temp_item_dir, ignore_errors=True)
+            continue
+
+        if not preprocess_temp_path.exists():
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Temporary preprocessing file missing during commit",
+            )
+
+        metadata = pending["metadata"]
+        fits_metadata = pending["fits_metadata"]
+        original_name = pending["original_name"]
+
+        category_dir = calibration_root / category
+        category_dir.mkdir(parents=True, exist_ok=True)
+
+        fits_dest = category_dir / original_name
+        fits_dest = _unique_target(fits_dest, fits_dest.suffix)
+        preprocess_temp_path.replace(fits_dest)
+
+        preview_dest: Path | None = None
+        if preview_temp_path is not None and preview_temp_path.exists():
+            preview_dest = category_dir / preview_temp_path.name
+            preview_dest = _unique_target(preview_dest, preview_dest.suffix)
+            preview_temp_path.replace(preview_dest)
+
+        metadata_path = temp_item_dir / "metadata.json"
+        if metadata_path.exists():
+            metadata_path.unlink(missing_ok=True)
+        shutil.rmtree(temp_item_dir, ignore_errors=True)
+
+        metadata = dict(metadata)
+        metadata.setdefault("data_kind", "preprocess")
+        metadata["preprocess_category"] = category
+        metadata["original_filename"] = original_name
+        metadata.pop("tmp_fits", None)
+        metadata["stored_fits_path"] = str(fits_dest)
+        if preview_dest is not None:
+            metadata["stored_preview_path"] = str(preview_dest)
+        metadata.pop("tmp_png", None)
+
+        data_record = models.Data(
+            hash=pending["hash"],
+            fits_original_path=str(fits_dest),
+            fits_image_path=str(preview_dest) if preview_dest else None,
+            fits_data_json=fits_metadata,
+            metadata_json=metadata,
+        )
+        db.add(data_record)
+        committed_preprocess.append(data_record)
 
     # ---- Flush before creating relationships ----
     try:
@@ -669,6 +919,9 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
     for data_item in committed_data:
         await db.refresh(data_item)
         setattr(data_item, "dataset_id", dataset.id)
+    for data_item in committed_preprocess:
+        await db.refresh(data_item)
+        setattr(data_item, "dataset_id", dataset.id)
     for session_model in sessions:
         await db.refresh(session_model)
 
@@ -676,13 +929,15 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
     setattr(repository, "session", None)
 
     # ---- Start background worker ----
-    _start_session_worker(session_ids)
+    if session_ids:
+        _start_session_worker(session_ids)
 
     # ---- Return final response ----
     return schemas.UploadCommitResponse(
         repository=repository,
         dataset=dataset,
         data=committed_data,
+        preprocess_data=committed_preprocess,
         sessions=sessions,
     )
 
