@@ -402,8 +402,8 @@ async def _step_lightcurve(ctx: PipelineContext, db: AsyncSession) -> dict[str, 
         matrix,
         median_flux,
         xy,
-        bright_tol=0.5,
-        k=max(min(20, matrix.shape[1] - 1) if matrix.shape[1] > 1 else 0, 3),
+        bright_tol=0.25,
+        k=max(min(20, matrix.shape[1] - 1) if matrix.shape[1] > 1 else 0, 6),
     )
 
     per_star_payload: dict[str, dict[str, Any]] = {}
