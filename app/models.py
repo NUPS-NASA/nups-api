@@ -387,7 +387,6 @@ class Data(Base):
         back_populates="data",
         cascade="all, delete-orphan",
     )
-    sessions: Mapped[list["Session"]] = relationship(back_populates="data")
 
 
 class DatasetPreprocessData(Base):
@@ -413,7 +412,7 @@ class DatasetPreprocessData(Base):
 
 
 class Session(Base):
-    """Processing run for a given data version."""
+    """Processing run for a committed dataset version."""
 
     __tablename__ = "sessions"
 
@@ -430,9 +429,6 @@ class Session(Base):
     dataset_id: Mapped[int] = mapped_column(
         ForeignKey("dataset.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    data_id: Mapped[int] = mapped_column(
-        ForeignKey("data.id", ondelete="CASCADE"), nullable=False, index=True
-    )
     data_version: Mapped[int] = mapped_column(Integer, nullable=False)
     current_step: Mapped[str | None] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -444,11 +440,8 @@ class Session(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    __table_args__ = (UniqueConstraint("dataset_id", "data_id"),)
-
     repository: Mapped[Repository] = relationship(back_populates="sessions")
     dataset: Mapped[Dataset] = relationship(back_populates="sessions")
-    data: Mapped[Data] = relationship(back_populates="sessions")
     pipeline_steps: Mapped[list["PipelineStep"]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
