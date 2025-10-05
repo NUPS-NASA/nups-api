@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import insert, select
+from sqlalchemy.orm import selectinload
 
 from ... import models, schemas
 from ..dependencies import DBSession
@@ -104,6 +105,38 @@ async def list_data(
     for data_item in data_items:
         setattr(data_item, "dataset_id", dataset_id)
     return data_items
+
+
+@router.get(
+    "/datasets/preprocess",
+    response_model=schemas.DatasetPreprocessGroup,
+    summary="List preprocessing data items",
+)
+async def list_dataset_preprocess(
+    db: DBSession,
+    dataset_id: int = Query(..., description="Dataset identifier"),
+) -> schemas.DatasetPreprocessGroup:
+    dataset = await _get_dataset_or_404(dataset_id, db)
+
+    result = await db.scalars(
+        select(models.DatasetPreprocessData)
+        .options(selectinload(models.DatasetPreprocessData.data))
+        .where(models.DatasetPreprocessData.dataset_id == dataset_id)
+        .order_by(models.DatasetPreprocessData.category.asc(), models.DatasetPreprocessData.id.asc())
+    )
+    entries = result.unique().all()
+    grouped: dict[str, list[models.Data]] = {
+        category: [] for category in schemas.PREPROCESS_CATEGORY_VALUES
+    }
+    for entry in entries:
+        data_item = entry.data
+        if data_item is None:
+            continue
+        setattr(data_item, "dataset_id", dataset.id)
+        if entry.category in grouped:
+            grouped[entry.category].append(data_item)
+
+    return schemas.DatasetPreprocessGroup(**grouped)
 
 
 @router.post(

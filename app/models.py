@@ -349,6 +349,11 @@ class Dataset(Base):
         secondary=dataset_data_association,
         back_populates="datasets",
     )
+    preprocess_items: Mapped[list["DatasetPreprocessData"]] = relationship(
+        "DatasetPreprocessData",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+    )
     sessions: Mapped[list["Session"]] = relationship(back_populates="dataset")
 
 
@@ -377,7 +382,34 @@ class Data(Base):
         secondary=dataset_data_association,
         back_populates="data_items",
     )
+    preprocess_links: Mapped[list["DatasetPreprocessData"]] = relationship(
+        "DatasetPreprocessData",
+        back_populates="data",
+        cascade="all, delete-orphan",
+    )
     sessions: Mapped[list["Session"]] = relationship(back_populates="data")
+
+
+class DatasetPreprocessData(Base):
+    """Association between datasets and preprocessing data grouped by category."""
+
+    __tablename__ = "dataset_preprocess_data"
+
+    id: Mapped[int] = mapped_column(
+        BIGINT_PK, primary_key=True, index=True, autoincrement=True
+    )
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("dataset.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    data_id: Mapped[int] = mapped_column(
+        ForeignKey("data.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    category: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    __table_args__ = (UniqueConstraint("dataset_id", "data_id"),)
+
+    dataset: Mapped[Dataset] = relationship(back_populates="preprocess_items")
+    data: Mapped[Data] = relationship(back_populates="preprocess_links")
 
 
 class Session(Base):

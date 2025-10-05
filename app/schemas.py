@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date as Date, datetime
-from typing import Literal
+from typing import Literal, get_args
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -478,6 +478,7 @@ class DataRead(BaseModel):
 from pydantic import BaseModel, Field, ConfigDict
 
 PreprocessCategory = Literal["dark", "bias", "flat"]
+PREPROCESS_CATEGORY_VALUES: tuple[str, ...] = get_args(PreprocessCategory)
 
 
 class TempUploadItem(BaseModel):
@@ -599,6 +600,23 @@ class UploadCommitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DatasetPreprocessGroup(BaseModel):
+    dark: list[DataRead] = Field(
+        default_factory=list,
+        description="Dark frame preprocessing data items associated with the dataset.",
+    )
+    bias: list[DataRead] = Field(
+        default_factory=list,
+        description="Bias frame preprocessing data items associated with the dataset.",
+    )
+    flat: list[DataRead] = Field(
+        default_factory=list,
+        description="Flat field preprocessing data items associated with the dataset.",
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # -----------------------
 # Session & pipeline schemas
 # -----------------------
@@ -681,6 +699,10 @@ class UploadCommitResponse(BaseModel):
         default_factory=list,
         description="Committed preprocessing files persisted to storage.",
     )
+    preprocess_grouped: DatasetPreprocessGroup = Field(
+        default_factory=DatasetPreprocessGroup,
+        description="Preprocessing files grouped by calibration category.",
+    )
     sessions: list[SessionRead] = Field(description="Sessions spawned for each committed data item.")
 
     model_config = ConfigDict(extra="forbid")
@@ -730,6 +752,7 @@ __all__ = [
     "DataRead",
     "DatasetCreate",
     "DatasetRead",
+    "DatasetPreprocessGroup",
     "FollowCreate",
     "FollowRead",
     "FollowerCreate",
@@ -753,6 +776,7 @@ __all__ = [
     "StageUploadsResponse",
     "TempUploadItem",
     "TempPreprocessItem",
+    "PREPROCESS_CATEGORY_VALUES",
     "UploadCommitItem",
     "UploadCommitRequest",
     "UploadCommitResponse",
