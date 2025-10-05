@@ -65,7 +65,9 @@ class PipelineContext:
     fwhm: np.ndarray | None = None
     sky: np.ndarray | None = None
     raw_lightcurve: np.ndarray | None = None
+    raw_lightcurves: dict[int, np.ndarray] = field(default_factory=dict)
     detrended_flux: np.ndarray | None = None
+    detrended_lightcurves: dict[int, np.ndarray] = field(default_factory=dict)
     target_index: int | None = None
     comparison_indices: list[int] = field(default_factory=list)
 
@@ -293,7 +295,10 @@ async def _step_lightcurve(ctx: PipelineContext, db: AsyncSession) -> dict[str, 
     target_index = int(np.nanargmax(median_flux))
     ctx.target_index = target_index
 
-    xy = ctx.reference_stars[:, :2] if ctx.reference_stars is not None else np.zeros((matrix.shape[1], 2))
+    xy = (
+        ctx.reference_stars[:, :2]
+        if ctx.reference_stars is not None
+        else np.zeros((matrix.shape[1], 2))
     comp_ids = pick_comps_rms_aware_general(
         target_index,
         matrix,
@@ -302,35 +307,83 @@ async def _step_lightcurve(ctx: PipelineContext, db: AsyncSession) -> dict[str, 
         bright_tol=0.5,
         k=max(min(20, matrix.shape[1] - 1) if matrix.shape[1] > 1 else 0, 3),
     )
-    if len(comp_ids) < 2:
-        sorted_indices = np.argsort(-median_flux)
-        comp_ids = [int(idx) for idx in sorted_indices if idx != target_index][:5]
-    if len(comp_ids) < 1:
-        raise RuntimeError("Not enough comparison stars identified for lightcurve")
 
-    ctx.comparison_indices = [int(idx) for idx in comp_ids]
+    per_star_payload: dict[str, dict[str, Any]] = {}
+    ctx.raw_lightcurves = {}
+    ctx.raw_lightcurve = None
+    ctx.comparison_indices = []
+    stored = 0
+    skipped = 0
+    target_weights: np.ndarray | None = None
 
-    reference, weights = weighted_reference(matrix[:, ctx.comparison_indices])
-    target_series = matrix[:, target_index]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        raw_rel = target_series / reference
-    finite = np.isfinite(raw_rel)
-    median = np.nanmedian(raw_rel[finite]) if np.any(finite) else np.nan
-    if np.isfinite(median) and median not in (0.0, np.nan):
-        raw_rel = raw_rel / median
+    for star_index in range(matrix.shape[1]):
+        comp_ids = pick_comps_rms_aware_general(
+            star_index,
+            matrix,
+            median_flux,
+            xy,
+            bright_tol=0.3,
+            k=min(20, matrix.shape[1] - 1) if matrix.shape[1] > 1 else 0,
+        )
+        if len(comp_ids) < 2:
+            sorted_indices = np.argsort(-median_flux)
+            comp_ids = [int(idx) for idx in sorted_indices if idx != star_index][:5]
 
-    times = ctx.times if ctx.times is not None else np.arange(len(raw_rel), dtype=float)
-    if times.shape[0] != raw_rel.shape[0] or np.any(~np.isfinite(times)):
-        times = np.arange(len(raw_rel), dtype=float)
+        comp_ids = [int(idx) for idx in comp_ids if idx != star_index]
+        if not comp_ids:
+            if star_index == target_index:
+                raise RuntimeError("Not enough comparison stars identified for lightcurve")
+            skipped += 1
+            continue
+
+        reference, weights = weighted_reference(matrix[:, comp_ids])
+        star_series = matrix[:, star_index]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            raw_rel = star_series / reference
+        finite = np.isfinite(raw_rel)
+        median = np.nanmedian(raw_rel[finite]) if np.any(finite) else np.nan
+        if np.isfinite(median) and median not in (0.0, np.nan):
+            raw_rel = raw_rel / median
+
+        ctx.raw_lightcurves[star_index] = raw_rel
+        per_star_payload[str(star_index)] = {
+            "comparison_indices": comp_ids,
+            "comparison_weights": weights.astype(float).tolist(),
+            "raw_relative_flux": raw_rel.astype(float).tolist(),
+        }
+        stored += 1
+
+        if star_index == target_index:
+            ctx.comparison_indices = comp_ids
+            ctx.raw_lightcurve = raw_rel
+            target_weights = weights
+
+    if target_index not in ctx.raw_lightcurves or ctx.raw_lightcurve is None:
+        raise RuntimeError("Target star lightcurve could not be computed")
+
+    times = (
+        ctx.times
+        if ctx.times is not None
+        else np.arange(ctx.raw_lightcurves[target_index].shape[0], dtype=float)
+    )
+    if (
+        times.shape[0] != ctx.raw_lightcurves[target_index].shape[0]
+        or np.any(~np.isfinite(times))
+    ):
+        times = np.arange(ctx.raw_lightcurves[target_index].shape[0], dtype=float)
     ctx.times = times
-    ctx.raw_lightcurve = raw_rel
+
+    target_weights = (
+        target_weights if target_weights is not None else np.zeros(0, dtype=float)
+    )
 
     payload = {
         "target_index": target_index,
         "comparison_indices": ctx.comparison_indices,
         "times": times.astype(float).tolist(),
-        "raw_relative_flux": raw_rel.astype(float).tolist(),
-        "comparison_weights": weights.astype(float).tolist(),
+        "raw_relative_flux": ctx.raw_lightcurve.astype(float).tolist(),
+        "comparison_weights": target_weights.astype(float).tolist(),
+        "stars": per_star_payload,
     }
 
     record = await db.scalar(
@@ -346,41 +399,75 @@ async def _step_lightcurve(ctx: PipelineContext, db: AsyncSession) -> dict[str, 
     summary = {
         "target_index": target_index,
         "comparison_count": len(ctx.comparison_indices),
-        "lightcurve_points": len(raw_rel),
+        "lightcurve_points": len(ctx.raw_lightcurve),
+        "stars_saved": stored,
+        "stars_skipped": skipped,
     }
     return summary
 
 
 async def _step_detrend(ctx: PipelineContext, db: AsyncSession) -> dict[str, Any]:
-    if ctx.raw_lightcurve is None or ctx.times is None:
-        raise RuntimeError("Raw lightcurve missing before detrending step")
+    if not ctx.raw_lightcurves or ctx.times is None:
+        raise RuntimeError("Raw lightcurves missing before detrending step")
+    if ctx.raw_lightcurve is None:
+        raise RuntimeError("Target raw lightcurve missing before detrending step")
+
+    first_series = next(iter(ctx.raw_lightcurves.values()))
+    length = int(first_series.shape[0])
 
     covariates: list[np.ndarray] = []
     cov_names: list[str] = []
-    length = ctx.raw_lightcurve.shape[0]
-
     for name, data in ("airmass", ctx.airmass), ("fwhm", ctx.fwhm), ("sky", ctx.sky):
         arr = _ensure_numpy_array(data, length)
         if np.any(np.isfinite(arr)):
             covariates.append(arr)
             cov_names.append(name)
 
-    if covariates:
-        baseline, corrected, good = detrend_by_covariates(ctx.raw_lightcurve, covariates)
-    else:
-        baseline = np.ones_like(ctx.raw_lightcurve)
-        corrected = ctx.raw_lightcurve.copy()
-        good = np.isfinite(ctx.raw_lightcurve)
+    per_star_payload: dict[str, dict[str, Any]] = {}
+    detrended_lightcurves: dict[int, np.ndarray] = {}
 
-    ctx.detrended_flux = corrected
+    target_baseline: np.ndarray | None = None
+    target_corrected: np.ndarray | None = None
+    target_good: np.ndarray | None = None
+
+    for star_index, raw_series in ctx.raw_lightcurves.items():
+        series = _ensure_numpy_array(raw_series, length)
+        if covariates:
+            baseline, corrected, good = detrend_by_covariates(series, covariates)
+        else:
+            baseline = np.ones_like(series)
+            corrected = series.copy()
+            good = np.isfinite(series)
+
+        detrended_lightcurves[star_index] = corrected
+        per_star_payload[str(star_index)] = {
+            "raw_relative_flux": series.astype(float).tolist(),
+            "detrended_flux": corrected.astype(float).tolist(),
+            "baseline": baseline.astype(float).tolist(),
+            "good_mask": good.astype(bool).tolist(),
+        }
+
+        if star_index == ctx.target_index:
+            target_baseline = baseline
+            target_corrected = corrected
+            target_good = good
+
+    if target_corrected is None or target_baseline is None or target_good is None:
+        raise RuntimeError("Target star detrending failed")
+
+    ctx.detrended_flux = target_corrected
+    ctx.detrended_lightcurves = detrended_lightcurves
 
     payload = {
         "times": ctx.times.astype(float).tolist(),
-        "raw_relative_flux": ctx.raw_lightcurve.astype(float).tolist(),
-        "detrended_flux": corrected.astype(float).tolist(),
-        "baseline": baseline.astype(float).tolist(),
+        "raw_relative_flux": ctx.raw_lightcurve.astype(float).tolist()
+        if ctx.raw_lightcurve is not None
+        else [],
+        "detrended_flux": target_corrected.astype(float).tolist(),
+        "baseline": target_baseline.astype(float).tolist(),
         "covariate_names": cov_names,
-        "good_mask": good.astype(bool).tolist(),
+        "good_mask": target_good.astype(bool).tolist(),
+        "stars": per_star_payload,
     }
 
     record = await db.scalar(
@@ -395,7 +482,8 @@ async def _step_detrend(ctx: PipelineContext, db: AsyncSession) -> dict[str, Any
 
     summary = {
         "covariates_used": cov_names,
-        "points": len(corrected),
+        "points": len(target_corrected),
+        "stars_detrended": len(per_star_payload),
     }
     return summary
 
