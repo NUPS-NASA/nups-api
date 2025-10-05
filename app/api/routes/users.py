@@ -5,7 +5,16 @@ from sqlalchemy import Select, select
 from sqlalchemy.orm import selectinload
 
 from ... import models, schemas
-from ..dependencies import DBSession
+from ...config import get_settings
+from ...security import (
+    InvalidTokenError,
+    create_access_token,
+    create_refresh_token,
+    get_token_subject,
+    hash_password,
+    verify_password,
+)
+from ..dependencies import CurrentUser, DBSession
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -49,7 +58,10 @@ async def create_user(payload: schemas.UserCreate, db: DBSession) -> schemas.Use
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
 
-    user = models.User(email=payload.email, password_hash=payload.password_hash)
+    user = models.User(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+    )
     if payload.profile:
         user.profile = models.UserProfile(**payload.profile.model_dump())
 
@@ -62,6 +74,110 @@ async def create_user(payload: schemas.UserCreate, db: DBSession) -> schemas.Use
     if created_user is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="User creation failed")
     return created_user
+
+
+@router.post(
+    "/login",
+    response_model=schemas.AuthLoginResponse,
+    summary="Authenticate a user",
+    response_description="The authenticated user resource and tokens.",
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Invalid credentials supplied.",
+        },
+    },
+)
+async def login(payload: schemas.UserLogin, db: DBSession) -> schemas.AuthLoginResponse:
+    """Validate user credentials and return signed tokens."""
+
+    user = await db.scalar(
+        _user_with_profile_query().where(models.User.email == payload.email)
+    )
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+
+    settings = get_settings()
+    access_token = create_access_token(
+        user.id,
+        secret_key=settings.auth_secret_key,
+        algorithm=settings.auth_algorithm,
+        expires_minutes=settings.auth_access_token_exp_minutes,
+    )
+    refresh_token = create_refresh_token(
+        user.id,
+        secret_key=settings.auth_secret_key,
+        algorithm=settings.auth_algorithm,
+        expires_minutes=settings.auth_refresh_token_exp_minutes,
+    )
+
+    return schemas.AuthLoginResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=user,
+    )
+
+
+@router.post(
+    "/refresh",
+    response_model=schemas.AuthTokenRefreshResponse,
+    summary="Refresh authentication tokens",
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Invalid or expired refresh token supplied.",
+        },
+    },
+)
+async def refresh_tokens(
+    payload: schemas.AuthTokenRefreshRequest, db: DBSession
+) -> schemas.AuthTokenRefreshResponse:
+    """Issue a new access and refresh token pair from a refresh token."""
+
+    settings = get_settings()
+    try:
+        subject = get_token_subject(
+            token=payload.refresh_token,
+            expected_type="refresh",
+            secret_key=settings.auth_secret_key,
+            algorithm=settings.auth_algorithm,
+        )
+    except InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+        ) from exc
+
+    try:
+        user_id = int(subject)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token payload",
+        ) from exc
+
+    user = await db.scalar(
+        _user_with_profile_query().where(models.User.id == user_id)
+    )
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    access_token = create_access_token(
+        user.id,
+        secret_key=settings.auth_secret_key,
+        algorithm=settings.auth_algorithm,
+        expires_minutes=settings.auth_access_token_exp_minutes,
+    )
+    refresh_token = create_refresh_token(
+        user.id,
+        secret_key=settings.auth_secret_key,
+        algorithm=settings.auth_algorithm,
+        expires_minutes=settings.auth_refresh_token_exp_minutes,
+    )
+
+    return schemas.AuthTokenRefreshResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=user,
+    )
 
 
 @router.get(
@@ -123,8 +239,7 @@ async def update_user(user_id: int, payload: schemas.UserUpdate, db: DBSession) 
 
     if payload.email is not None:
         user.email = payload.email
-    if payload.password_hash is not None:
-        user.password_hash = payload.password_hash
+    # Only email can be mutated directly on the user record.
 
     if payload.profile is not None:
         profile_updates = payload.profile.model_dump(exclude_unset=True)
@@ -160,6 +275,27 @@ async def delete_user(user_id: int, db: DBSession) -> Response:
     await db.delete(user)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/me",
+    response_model=schemas.UserRead,
+    summary="Retrieve the authenticated user",
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Authentication required or token invalid.",
+        }
+    },
+)
+async def get_me(current_user: CurrentUser, db: DBSession) -> schemas.UserRead:
+    """Return the current authenticated user including profile information."""
+
+    user = await db.scalar(
+        _user_with_profile_query().where(models.User.id == current_user.id)
+    )
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user
 
 
 @router.get(

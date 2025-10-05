@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.log
+.env
+.venv/
+.git/
+.gitignore
+nups.db
+scripts/__pycache__/

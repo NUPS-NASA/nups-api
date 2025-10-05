@@ -2,24 +2,20 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .api.routes import health, users
+from .api.routes import datasets, health, projects, repositories, sessions, stats, users
 from .config import get_settings
 from .database import Base, engine
+from .docs import (
+    API_DESCRIPTION,
+    TERMS_OF_SERVICE_URL,
+    get_contact_info,
+    get_license_info,
+    get_servers,
+    get_swagger_ui_parameters,
+    get_tags_metadata,
+)
 
 settings = get_settings()
-
-API_DESCRIPTION = """Async FastAPI service that manages users, extended profile data, and follow relationships."""
-
-TAGS_METADATA = [
-    {
-        "name": "health",
-        "description": "Liveness and readiness probes for infrastructure monitoring.",
-    },
-    {
-        "name": "users",
-        "description": "CRUD operations for user accounts, profile records, and follow relationships.",
-    },
-]
 
 
 @asynccontextmanager
@@ -38,17 +34,22 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         description=API_DESCRIPTION,
         version="1.0.0",
-        contact={
-            "name": "nups-api maintainers",
-            "url": "https://github.com/tgim4253/nups-api",
-        },
-        openapi_tags=TAGS_METADATA,
+        contact=get_contact_info(),
+        license_info=get_license_info(),
+        terms_of_service=TERMS_OF_SERVICE_URL,
+        servers=get_servers(),
+        openapi_tags=get_tags_metadata(),
         lifespan=lifespan,
-        swagger_ui_parameters={"docExpansion": "list"},
+        swagger_ui_parameters=get_swagger_ui_parameters(),
     )
 
-    app.include_router(health.router)
-    app.include_router(users.router)
+    app.include_router(health.router, prefix="/api")
+    app.include_router(users.router, prefix="/api")
+    app.include_router(repositories.router, prefix="/api")
+    app.include_router(projects.router, prefix="/api")
+    app.include_router(datasets.router, prefix="/api")
+    app.include_router(sessions.router, prefix="/api")
+    app.include_router(stats.router, prefix="/api")
 
     return app
 

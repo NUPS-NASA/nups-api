@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +10,22 @@ class Settings(BaseSettings):
     app_name: str = "nups-api"
     app_port: int = 4000
     database_url: str = "sqlite+aiosqlite:///./nups.db"
+    auth_secret_key: str = Field(
+        default="change-me",
+        description="Secret key used for signing authentication tokens.",
+    )
+    auth_algorithm: str = Field(
+        default="HS256",
+        description="Signing algorithm for JWT tokens.",
+    )
+    auth_access_token_exp_minutes: int = Field(
+        default=60,
+        description="Access token lifetime in minutes.",
+    )
+    auth_refresh_token_exp_minutes: int = Field(
+        default=60 * 24 * 14,
+        description="Refresh token lifetime in minutes.",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
