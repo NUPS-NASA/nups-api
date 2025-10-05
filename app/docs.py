@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-API_DESCRIPTION = """FastAPI service for the nups platform delivering user management, collaborative projects, uploads, and processing telemetry.\n\n## Domain highlights\n- **Users & profiles** — manage accounts, social graphs, and profile metadata.\n- **Repositories & datasets** — organise uploads, dataset versions, and per-item assets.\n- **Projects & pins** — coordinate contributors, link uploads, and curate pinned work.\n- **Sessions & candidates** — inspect processing runs, pipeline steps, and review detection outcomes.\n\n## Operational notes\n- Every route is mounted beneath the `/api` prefix.\n- Write endpoints persist changes immediately via SQLAlchemy + async sessions.\n- Authentication is omitted in this sample service; integrate your preferred provider before production use."""
+API_DESCRIPTION = """REST API that powers the nups sample platform. It is built with FastAPI and ships with async SQLAlchemy models, JWT based authentication helpers, and file-handling utilities used by the upload pipeline.\n\n## 주요 기능 (Key capabilities)\n- **Health** — readiness and version metadata used by deployment probes.\n- **Users & auth** — register accounts, manage profiles, and issue/refresh access tokens.\n- **Repositories & uploads** — organise repository metadata, staged uploads, and committed assets.\n- **Datasets & data artefacts** — publish dataset versions and inspect per-item entries.\n- **Projects & members** — curate project spaces, manage membership, and maintain pinned showcases.\n- **Sessions & candidates** — review processing sessions and evaluate detection candidates.\n- **Stats** — surface contribution metrics and aggregate counters.\n\n## Operational notes\n- All endpoints are namespaced beneath the `/api` prefix.\n- Write operations persist immediately via SQLAlchemy async sessions.\n- Default server configuration listens on port 4000 (override with the `APP_PORT` setting)."""
 
 CONTACT_INFO = {
     "name": "nups-api maintainers",
@@ -20,9 +20,13 @@ TERMS_OF_SERVICE_URL = "https://github.com/tgim4253/nups-api#readme"
 
 SERVERS = [
     {
+        "url": "http://localhost:4000",
+        "description": "Local development (default FastAPI settings)",
+    },
+    {
         "url": "http://localhost:8000",
-        "description": "Local development",
-    }
+        "description": "Alternate development port (e.g. uvicorn default)",
+    },
 ]
 
 TAGS_METADATA = [
@@ -44,35 +48,35 @@ TAGS_METADATA = [
     },
     {
         "name": "projects",
-        "description": "Collaborative project registry, membership management, and linked uploads.",
+        "description": "Project catalogue with CRUD operations, membership management, and search helpers.",
     },
     {
         "name": "pins",
-        "description": "Pin, reorder, or remove projects showcased on user profiles.",
+        "description": "Manage a user's pinned project showcase including ordering and removal.",
     },
     {
         "name": "datasets",
-        "description": "Versioned dataset catalogue associated with repositories.",
+        "description": "Dataset registry for versioned releases associated with repositories.",
     },
     {
         "name": "data",
-        "description": "Fine-grained data artefacts contained within dataset versions.",
+        "description": "Access granular data artefacts stored inside dataset versions.",
     },
     {
         "name": "uploads",
-        "description": "Stage FITS files, commit uploads, and trigger processing sessions.",
+        "description": "Handle staged files, commit uploads, and manage storage lifecycle events.",
     },
     {
         "name": "sessions",
-        "description": "Processing session history and pipeline step inspection.",
+        "description": "Inspect processing sessions, pipeline steps, and derived outcomes.",
     },
     {
         "name": "candidates",
-        "description": "Candidate detection review including verification workflow.",
+        "description": "Review detection candidates surfaced from processing sessions.",
     },
     {
         "name": "stats",
-        "description": "User contribution metrics, counters, and time-series data.",
+        "description": "Retrieve user contribution statistics, counters, and aggregates.",
     },
 ]
 
