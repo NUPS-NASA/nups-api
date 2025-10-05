@@ -90,38 +90,13 @@ async def create_user(payload: schemas.UserCreate, db: DBSession) -> schemas.Use
 async def login(payload: schemas.UserLogin, db: DBSession) -> schemas.AuthLoginResponse:
     """Validate user credentials and return signed tokens."""
 
-    settings = get_settings()
-    is_master_login = (
-        payload.email == settings.demo_master_email
-        and payload.password == settings.demo_master_password
+    user = await db.scalar(
+        _user_with_profile_query().where(models.User.email == payload.email)
     )
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
-    if is_master_login:
-        user = await db.scalar(
-            _user_with_profile_query().where(models.User.email == settings.demo_master_email)
-        )
-        if user is None:
-            master_user = models.User(
-                email=settings.demo_master_email,
-                password_hash=hash_password(settings.demo_master_password),
-            )
-            db.add(master_user)
-            await db.commit()
-            user = await db.scalar(
-                _user_with_profile_query().where(models.User.email == settings.demo_master_email)
-            )
-            if user is None:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Master user provisioning failed",
-                )
-    else:
-        user = await db.scalar(
-            _user_with_profile_query().where(models.User.email == payload.email)
-        )
-        if user is None or not verify_password(payload.password, user.password_hash):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
-
+    settings = get_settings()
     access_token = create_access_token(
         user.id,
         secret_key=settings.auth_secret_key,
