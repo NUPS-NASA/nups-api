@@ -239,6 +239,9 @@ SIMULATED_PIPELINE_STEPS: list[tuple[str, Callable[[], Awaitable[None]]]] = [
     ("reporting", _step_reporting),
 ]
 
+_ACTIVE_SESSION_LOCK = threading.Lock()
+_ACTIVE_SESSION_WORKERS: set[int] = set()
+
 
 def _unique_target(base_path: Path, suffix: str) -> Path:
     """Return a path guaranteed not to clash with an existing file."""
@@ -258,18 +261,27 @@ def _unique_target(base_path: Path, suffix: str) -> Path:
 
 
 def _start_session_worker(session_ids: list[int]) -> None:
-    """Launch a background worker that simulates long-running session processing."""
+    """Launch background workers for the provided session IDs."""
 
-    if not session_ids:
-        return
+    for session_id in session_ids:
+        _start_single_session_worker(session_id)
 
-    def _runner() -> None:
+
+def _start_single_session_worker(session_id: int) -> None:
+    """Launch a background worker for a single session if it's not already running."""
+
+    with _ACTIVE_SESSION_LOCK:
+        if session_id in _ACTIVE_SESSION_WORKERS:
+            return
+        _ACTIVE_SESSION_WORKERS.add(session_id)
+
+    def _runner(selected_session_id: int) -> None:
         async def _process() -> None:
-            async with SessionLocal() as session:
-                for session_id in session_ids:
-                    session_obj = await session.get(models.Session, session_id)
+            try:
+                async with SessionLocal() as session:
+                    session_obj = await session.get(models.Session, selected_session_id)
                     if session_obj is None:
-                        continue
+                        return
 
                     if not SIMULATED_PIPELINE_STEPS:
                         session_obj.status = "completed"
@@ -279,7 +291,7 @@ def _start_session_worker(session_ids: list[int]) -> None:
                         session_obj.finished_at = now
                         session_obj.current_step = "completed"
                         await session.commit()
-                        continue
+                        return
 
                     session_obj.status = "running"
                     session_obj.current_step = SIMULATED_PIPELINE_STEPS[0][0]
@@ -340,10 +352,13 @@ def _start_session_worker(session_ids: list[int]) -> None:
                     session_obj.finished_at = datetime.now(tz=timezone.utc)
                     session_obj.progress = 100
                     await session.commit()
+            finally:
+                with _ACTIVE_SESSION_LOCK:
+                    _ACTIVE_SESSION_WORKERS.discard(selected_session_id)
 
         asyncio.run(_process())
 
-    threading.Thread(target=_runner, daemon=True).start()
+    threading.Thread(target=_runner, args=(session_id,), daemon=True).start()
 
 
 @router.get(
