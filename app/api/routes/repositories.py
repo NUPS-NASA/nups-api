@@ -154,6 +154,10 @@ async def list_user_repositories(
     user_id: int,
     db: DBSession,
     include_session: bool = Query(True, description="Include latest session summary."),
+    starred_by: int | None = Query(
+        default=None,
+        description="If provided, mark repositories starred by this user.",
+    ),
 ) -> list[schemas.RepositoryRead]:
     """Return repositories owned by the specified user."""
 
@@ -164,12 +168,23 @@ async def list_user_repositories(
     )
     repositories = result.all()
 
+    repo_ids = [repo.id for repo in repositories]
+
+    starred_repo_ids: set[int] = set()
+    if starred_by is not None and repo_ids:
+        star_result = await db.scalars(
+            select(models.StarredRepository.repository_id)
+            .where(models.StarredRepository.user_id == starred_by)
+            .where(models.StarredRepository.repository_id.in_(repo_ids))
+        )
+        starred_repo_ids = set(star_result.all())
+
     sessions_map: dict[int, models.Session] = {}
     if include_session:
-        sessions_map = await _load_latest_sessions([repo.id for repo in repositories], db)
+        sessions_map = await _load_latest_sessions(repo_ids, db)
 
     for repo in repositories:
-        setattr(repo, "starred", False)
+        setattr(repo, "starred", repo.id in starred_repo_ids)
         setattr(repo, "session", sessions_map.get(repo.id))
 
     return repositories

@@ -474,26 +474,39 @@ class DataRead(BaseModel):
 # -----------------------
 
 
+from pydantic import BaseModel, Field, ConfigDict
+
 class TempUploadItem(BaseModel):
-    temp_id: str = Field(description="Unique identifier for the staged upload item.")
-    filename: str = Field(description="Original filename supplied by the client.")
-    size_bytes: int = Field(description="Size of the uploaded file in bytes.")
+    temp_id: str = Field(
+        description="Unique identifier for the staged upload item."
+    )
+    filename: str = Field(
+        description="Original filename supplied by the client."
+    )
+    size_bytes: int = Field(
+        description="Size of the uploaded file in bytes."
+    )
     content_type: str | None = Field(
         default=None,
-        description="Content type provided by the client during upload.",
+        description="Content type provided by the client during upload."
     )
-    fits_temp_path: str = Field(description="Filesystem path where the staged FITS file is stored.")
-    image_temp_path: str | None = Field(
+
+    tmp_fits: str = Field(
+        description="Temporary filesystem path where the staged FITS file is stored."
+    )
+    tmp_png: str | None = Field(
         default=None,
-        description="Filesystem path of the generated preview image.",
+        description="Temporary filesystem path of the generated preview PNG image."
     )
-    fits_data_json: dict | None = Field(
+
+    fits_header: dict | None = Field(
         default=None,
-        description="Extracted FITS metadata captured during staging.",
+        description="Extracted FITS header information captured during staging."
     )
+
     metadata_json: dict | None = Field(
         default=None,
-        description="Additional metadata describing the upload item.",
+        description="Additional metadata describing the upload item (non-FITS data)."
     )
 
     model_config = ConfigDict(extra="forbid")

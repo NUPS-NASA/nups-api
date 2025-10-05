@@ -238,7 +238,6 @@ async def seed_dummy_data() -> None:
                 for data_idx in range(2):
                     data_hash = uuid.uuid4().hex
                     data_item = Data(
-                        dataset=dataset,
                         hash=f"{repo.name}-{version}-{data_idx}-{data_hash}",
                         fits_original_path=f"/data/{repo.name}/raw_v{version}_{data_idx}.fits",
                         fits_image_path=f"/data/{repo.name}/preview_v{version}_{data_idx}.png",
@@ -252,6 +251,7 @@ async def seed_dummy_data() -> None:
                         },
                     )
                     session.add(data_item)
+                    dataset.data_items.append(data_item)
 
                     status = statuses[(index + version + data_idx) % len(statuses)]
                     start_time = base_time + timedelta(days=index, hours=data_idx * 3)

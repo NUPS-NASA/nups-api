@@ -6,11 +6,13 @@ import uuid
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Column,
     DateTime,
     ForeignKey,
     Integer,
     JSON,
     String,
+    Table,
     Text,
     UniqueConstraint,
     func,
@@ -24,6 +26,23 @@ from sqlalchemy.types import CHAR, TypeDecorator
 BIGINT_PK = Integer().with_variant(BigInteger(), "postgresql")
 
 from .database import Base
+
+
+dataset_data_association = Table(
+    "dataset_data",
+    Base.metadata,
+    Column(
+        "dataset_id",
+        ForeignKey("dataset.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "data_id",
+        ForeignKey("data.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    UniqueConstraint("dataset_id", "data_id"),
+)
 
 
 class GUID(TypeDecorator):
@@ -326,22 +345,20 @@ class Dataset(Base):
 
     repository: Mapped[Repository] = relationship(back_populates="datasets")
     data_items: Mapped[list["Data"]] = relationship(
-        back_populates="dataset",
-        cascade="all, delete-orphan",
+        "Data",
+        secondary=dataset_data_association,
+        back_populates="datasets",
     )
     sessions: Mapped[list["Session"]] = relationship(back_populates="dataset")
 
 
 class Data(Base):
-    """Individual FITS artifact within a dataset."""
+    """Individual FITS artifact that can belong to multiple datasets."""
 
     __tablename__ = "data"
 
     id: Mapped[int] = mapped_column(
         BIGINT_PK, primary_key=True, index=True, autoincrement=True
-    )
-    dataset_id: Mapped[int] = mapped_column(
-        ForeignKey("dataset.id", ondelete="CASCADE"), nullable=False, index=True
     )
     hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     fits_original_path: Mapped[str] = mapped_column(Text, nullable=False)
@@ -355,7 +372,11 @@ class Data(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    dataset: Mapped[Dataset] = relationship(back_populates="data_items")
+    datasets: Mapped[list[Dataset]] = relationship(
+        "Dataset",
+        secondary=dataset_data_association,
+        back_populates="data_items",
+    )
     sessions: Mapped[list["Session"]] = relationship(back_populates="data")
 
 
@@ -391,7 +412,7 @@ class Session(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    __table_args__ = (UniqueConstraint("data_id"),)
+    __table_args__ = (UniqueConstraint("dataset_id", "data_id"),)
 
     repository: Mapped[Repository] = relationship(back_populates="sessions")
     dataset: Mapped[Dataset] = relationship(back_populates="sessions")

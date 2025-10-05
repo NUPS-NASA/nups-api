@@ -81,10 +81,17 @@ async def list_data(
 
     result = await db.scalars(
         select(models.Data)
-        .where(models.Data.dataset_id == dataset_id)
+        .join(
+            models.dataset_data_association,
+            models.Data.id == models.dataset_data_association.c.data_id,
+        )
+        .where(models.dataset_data_association.c.dataset_id == dataset_id)
         .order_by(models.Data.created_at.desc())
     )
-    return result.all()
+    data_items = result.unique().all()
+    for data_item in data_items:
+        setattr(data_item, "dataset_id", dataset_id)
+    return data_items
 
 
 @router.post(
@@ -95,18 +102,36 @@ async def list_data(
     tags=["data"],
 )
 async def create_data(payload: schemas.DataCreate, db: DBSession) -> schemas.DataRead:
-    await _get_dataset_or_404(payload.dataset_id, db)
+    dataset = await _get_dataset_or_404(payload.dataset_id, db)
 
     existing = await db.scalar(
         select(models.Data).where(models.Data.hash == payload.hash)
     )
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Data hash already exists")
+        already_linked = await db.scalar(
+            select(models.dataset_data_association.c.dataset_id).where(
+                models.dataset_data_association.c.dataset_id == dataset.id,
+                models.dataset_data_association.c.data_id == existing.id,
+            )
+        )
+        if already_linked is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Dataset already contains the specified data item")
 
-    data_item = models.Data(**payload.model_dump())
+        dataset.data_items.append(existing)
+        await db.commit()
+        await db.refresh(existing)
+        setattr(existing, "dataset_id", dataset.id)
+        return existing
+
+    payload_dict = payload.model_dump()
+    payload_dict.pop("dataset_id")
+
+    data_item = models.Data(**payload_dict)
     db.add(data_item)
+    dataset.data_items.append(data_item)
     await db.commit()
     await db.refresh(data_item)
+    setattr(data_item, "dataset_id", dataset.id)
     return data_item
 
 
