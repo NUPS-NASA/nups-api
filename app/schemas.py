@@ -4,7 +4,7 @@ from datetime import date as Date, datetime
 from typing import Literal, get_args
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 # -----------------------
@@ -174,7 +174,7 @@ class UserProfileRead(UserProfileBase):
 
 
 class UserBase(BaseModel):
-    email: str = Field(
+    email: EmailStr = Field(
         description="Unique email address used for communication and login.",
         examples=["astro@example.com"],
     )
@@ -183,6 +183,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str = Field(
         description="Plaintext password that will be hashed before persistence.",
+        min_length=8,
         examples=["astr0n0my!"],
     )
     profile: UserProfileCreate | None = Field(
@@ -208,14 +209,14 @@ class UserCreate(UserBase):
 class UserLogin(BaseModel):
     """Credentials payload for logging in an existing user."""
 
-    email: str
-    password: str
+    email: EmailStr
+    password: str = Field(min_length=8)
 
     model_config = ConfigDict(extra="forbid")
 
 
 class UserUpdate(BaseModel):
-    email: str | None = Field(
+    email: EmailStr | None = Field(
         default=None,
         description="Updated email address. Must remain unique across users.",
     )

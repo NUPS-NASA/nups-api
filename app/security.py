@@ -28,6 +28,8 @@ def _b64decode(encoded: str) -> bytes:
 def hash_password(password: str) -> str:
     """Return a salted PBKDF2 hash for the supplied password."""
 
+    if not password:
+        raise ValueError("Password must be a non-empty string")
     salt = secrets.token_bytes(_SALT_SIZE)
     derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
     return f"{_b64encode(salt)}:{_b64encode(derived)}"
