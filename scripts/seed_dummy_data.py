@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
+from app.core import get_default_pipeline
 from app.database import Base, SessionLocal, engine
 from sqlalchemy import insert
 
@@ -212,21 +213,24 @@ async def seed_dummy_data() -> None:
 
         # --- Datasets, data files, sessions, and pipeline steps ---
         statuses = ["completed", "running", "failed", "queued"]
+        pipeline_steps = list(get_default_pipeline())
+        pipeline_names = [step.name for step in pipeline_steps]
         pipeline_templates = [
             [
-                {"name": "ingest", "status": "completed"},
-                {"name": "calibration", "status": "completed"},
-                {"name": "lightcurve", "status": "completed"},
+                {"name": pipeline_names[0], "status": "completed"},
+                {"name": pipeline_names[1], "status": "completed"},
+                {"name": pipeline_names[3], "status": "completed"},
+                {"name": pipeline_names[5], "status": "completed"},
             ],
             [
-                {"name": "ingest", "status": "completed"},
-                {"name": "registration", "status": "running"},
-                {"name": "classification", "status": "pending"},
+                {"name": pipeline_names[0], "status": "completed"},
+                {"name": pipeline_names[2], "status": "running"},
+                {"name": pipeline_names[5], "status": "pending"},
             ],
             [
-                {"name": "ingest", "status": "completed"},
-                {"name": "denoise", "status": "failed"},
-                {"name": "fallback", "status": "queued"},
+                {"name": pipeline_names[0], "status": "completed"},
+                {"name": pipeline_names[4], "status": "failed"},
+                {"name": pipeline_names[-1], "status": "queued"},
             ],
         ]
 

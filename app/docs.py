@@ -67,6 +67,10 @@ TAGS_METADATA = [
         "description": "Handle staged files, commit uploads, and manage storage lifecycle events.",
     },
     {
+        "name": "pipeline",
+        "description": "Inspect the canonical analysis pipeline and step metadata.",
+    },
+    {
         "name": "sessions",
         "description": "Inspect processing sessions, pipeline steps, and derived outcomes.",
     },
