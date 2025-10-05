@@ -34,14 +34,6 @@ class Settings(BaseSettings):
         default=60 * 24 * 14,
         description="Refresh token lifetime in minutes.",
     )
-    demo_master_email: str = Field(
-        default="1234@1234.com",
-        description="Demo-only master login email that bypasses credential checks.",
-    )
-    demo_master_password: str = Field(
-        default="1234",
-        description="Demo-only master login password that bypasses credential checks.",
-    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
