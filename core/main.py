@@ -1,4 +1,4 @@
-from config import (
+from .config import (
  LIGHT_DIR, BIAS_DIR, DARK_DIR, FLAT_DIR, OUTPUT_DIR,
  USE_BIAS, USE_DARK, USE_FLAT,
 DO_ALIGNMENT, SAVE_ALIGNED_FITS, ALIGNED_DIR,
@@ -11,6 +11,8 @@ N_LABELS_PREVIEW, PREVIEW_PATH
 import os, glob, math, warnings
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Non-GUI backend
 import matplotlib.pyplot as plt
 
 from astropy.io import fits
@@ -22,16 +24,16 @@ from photutils.aperture import CircularAperture, CircularAnnulus
 
 import astroalign as aa
 
-from PrepareFits import (
+from .PrepareFits import (
  list_fits_in, build_master_bias, build_master_dark_by_exptime, build_master_flat, load_fits_data, calibrate_frame, _stretch, detect_stars, save_detection_preview, read_time_from_header, align_to_reference, measure_frame_photometry,
 )
-from FrameLoad import (
+from .FrameLoad import (
     brief_array, brief_dark_dict_summary,
 )
-from FWHM import (
+from .FWHM import (
     get_header_airmass, estimate_frame_fwhm, get_header_airmass_2, estimate_frame_fwhm_2
 )
-from Detrending import (
+from .Detrending import (
     pick_comps_rms_aware_general, weighted_reference, detrend_by_covariates
 )
 
@@ -432,8 +434,8 @@ else:
 # 4) 보정 결과 누적(옵션: CSV 저장용)
 rel_wide_det = {}
 K = 20               # 비교성 개수(권장 15~25)
-BRIGHT_TOL = 0.25    # 밝기 유사도 허용치(±25%)
-MIN_COMPS  = 5       # 최소 비교성 수(부족하면 skip)
+BRIGHT_TOL = 0.5    # 밝기 유사도 허용치(±25%)
+MIN_COMPS  = 3       # 최소 비교성 수(부족하면 skip)
 
 def plot_detrended_only(x, y, title, outpath):
     plt.figure(figsize=(7.6, 4.4))
