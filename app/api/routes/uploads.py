@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import shutil
 import threading
@@ -873,6 +874,10 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
         )
         db.add(data_record)
         committed_preprocess.append(data_record)
+
+    # ---- Link all committed files to the dataset ----
+    for data_item in itertools.chain(committed_data, committed_preprocess):
+        dataset.data_items.append(data_item)
 
     # ---- Flush before creating relationships ----
     try:
