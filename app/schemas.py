@@ -639,6 +639,36 @@ class SessionRead(SessionSummary):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PipelineDefinitionStep(BaseModel):
+    order: int = Field(
+        description="1-based execution order for the pipeline step.",
+        examples=[1],
+    )
+    name: str = Field(
+        description="Canonical machine-readable identifier for the step.",
+        examples=["ingest"],
+    )
+    title: str = Field(
+        description="Human-friendly title describing the step.",
+        examples=["Raw ingestion"],
+    )
+    description: str = Field(
+        description="Detailed explanation of what the step performs.",
+        examples=["Load staged FITS data and validate headers."],
+    )
+
+
+class PipelineDefinitionRead(BaseModel):
+    steps: list[PipelineDefinitionStep] = Field(
+        default_factory=list,
+        description="Ordered list of pipeline steps executed by the service.",
+    )
+    total_steps: int = Field(
+        description="Total number of steps defined in the pipeline.",
+        examples=[7],
+    )
+
+
 class PipelineStepRead(BaseModel):
     step_id: int = Field(description="Unique step identifier within the run.")
     run_id: UUID = Field(description="Run identifier that owns the pipeline step.")
@@ -769,6 +799,8 @@ __all__ = [
     "PinRead",
     "PinReorder",
     "PipelineStepRead",
+    "PipelineDefinitionRead",
+    "PipelineDefinitionStep",
     "RepositoryLatestSessionRead",
     "ProjectCreate",
     "ProjectMemberCreate",

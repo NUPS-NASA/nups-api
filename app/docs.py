@@ -63,6 +63,10 @@ TAGS_METADATA = [
         "description": "Stage FITS files, commit uploads, and trigger processing sessions.",
     },
     {
+        "name": "pipeline",
+        "description": "Inspect the canonical analysis pipeline and step metadata.",
+    },
+    {
         "name": "sessions",
         "description": "Processing session history and pipeline step inspection.",
     },
