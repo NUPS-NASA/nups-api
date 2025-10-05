@@ -9,6 +9,7 @@ results sequentially.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -156,6 +157,84 @@ def _build_master_flat(
     return flat
 
 
+def _downsample_image(image: np.ndarray, max_size: int = 128) -> np.ndarray:
+    arr = np.asarray(image, dtype=float)
+    if arr.ndim == 0:
+        return arr.reshape(1, 1)
+    if arr.ndim == 1:
+        arr = arr[np.newaxis, :]
+    if arr.ndim > 2:
+        arr = arr.reshape(arr.shape[0], arr.shape[1])
+
+    height, width = arr.shape
+    row_step = max(1, int(math.ceil(height / max_size)))
+    col_step = max(1, int(math.ceil(width / max_size)))
+    return arr[::row_step, ::col_step]
+
+
+def _image_snapshot_payload(image: np.ndarray, max_size: int = 128) -> dict[str, Any]:
+    arr = np.asarray(image, dtype=float)
+    if arr.ndim == 0:
+        arr = arr.reshape(1, 1)
+    if arr.ndim == 1:
+        arr = arr[np.newaxis, :]
+    if arr.ndim > 2:
+        arr = arr.reshape(arr.shape[0], arr.shape[1])
+
+    preview_array = _downsample_image(arr, max_size=max_size)
+    preview: list[list[float | None]] = [
+        [float(value) if np.isfinite(value) else None for value in row]
+        for row in preview_array
+    ]
+
+    finite = np.isfinite(arr)
+    if np.any(finite):
+        min_val = float(np.nanmin(arr[finite]))
+        max_val = float(np.nanmax(arr[finite]))
+        median_val = float(np.nanmedian(arr[finite]))
+        mean_val = float(np.nanmean(arr[finite]))
+    else:
+        min_val = max_val = median_val = mean_val = None
+
+    return {
+        "shape": list(arr.shape),
+        "preview": preview,
+        "stats": {
+            "min": min_val,
+            "max": max_val,
+            "median": median_val,
+            "mean": mean_val,
+        },
+    }
+
+
+def _save_full_frame(path: Path, image: np.ndarray) -> str | None:
+    try:
+        np.savez_compressed(path, image=np.asarray(image, dtype=float))
+    except Exception as exc:  # pragma: no cover - defensive path
+        logger.warning("Failed to store calibration frame at %s: %s", path, exc)
+        return None
+    return str(path)
+
+
+def _build_calibration_snapshot(
+    raw_frame: np.ndarray,
+    calibrated_frame: np.ndarray,
+    analysis_dir: Path,
+    frame_stem: str,
+) -> dict[str, Any]:
+    before_payload = _image_snapshot_payload(raw_frame)
+    after_payload = _image_snapshot_payload(calibrated_frame)
+
+    before_path = analysis_dir / f"{frame_stem}_raw_frame.npz"
+    after_path = analysis_dir / f"{frame_stem}_calibrated_frame.npz"
+
+    before_payload["npz_path"] = _save_full_frame(before_path, raw_frame)
+    after_payload["npz_path"] = _save_full_frame(after_path, calibrated_frame)
+
+    return {"before": before_payload, "after": after_payload}
+
+
 def _summary_float(value: float | np.floating | None) -> float | None:
     if value is None:
         return None
@@ -201,6 +280,13 @@ async def _step_detect_reference(ctx: PipelineContext, db: AsyncSession) -> dict
     ctx.reference_image = calibrated
     ctx.reference_header = header
 
+    calibration_snapshot = _build_calibration_snapshot(
+        image,
+        calibrated,
+        ctx.analysis_dir,
+        first_path.stem,
+    )
+
     stars = detect_stars(calibrated)
     ctx.reference_stars = stars
 
@@ -216,6 +302,7 @@ async def _step_detect_reference(ctx: PipelineContext, db: AsyncSession) -> dict
         "reference_frame": first_path.name,
         "detected_stars": int(stars.shape[0]),
         "preview_path": preview,
+        "calibration_snapshot": calibration_snapshot,
     }
     return summary
 
