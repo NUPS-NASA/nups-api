@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 import json
 import shutil
 import threading
@@ -255,8 +254,6 @@ SIMULATED_PIPELINE_STEPS: list[tuple[str, Callable[[], Awaitable[None]]]] = [
 
 _ACTIVE_SESSION_LOCK = threading.Lock()
 _ACTIVE_SESSION_WORKERS: set[int] = set()
-
-PREPROCESS_CATEGORY_KEYS = ("dark", "bias", "flat")
 
 
 def _unique_target(base_path: Path, suffix: str) -> Path:
@@ -641,7 +638,7 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
     preprocess_pending: list[dict[str, Any]] = []
 
     for preprocess_item in payload.preprocess_items or []:
-        if preprocess_item.category not in PREPROCESS_CATEGORY_KEYS:
+        if preprocess_item.category not in schemas.PREPROCESS_CATEGORY_VALUES:
             await db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -740,7 +737,7 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
     target_dir.mkdir(parents=True, exist_ok=True)
 
     committed_data: list[models.Data] = []
-    committed_preprocess: list[models.Data] = []
+    committed_preprocess: list[tuple[str, models.Data]] = []
 
     for pending in pending_items:
         item_status = pending["status"]
@@ -817,7 +814,7 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
 
         if pending["status"] == "existing":
             data_record = pending["data"]
-            committed_preprocess.append(data_record)
+            committed_preprocess.append((category, data_record))
 
             if preprocess_temp_path.exists():
                 preprocess_temp_path.unlink(missing_ok=True)
@@ -873,20 +870,32 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
             metadata_json=metadata,
         )
         db.add(data_record)
-        committed_preprocess.append(data_record)
+        committed_preprocess.append((category, data_record))
 
     # ---- Flush before creating relationships ----
     try:
         await db.flush()
         association_payload = [
             {"dataset_id": dataset.id, "data_id": data_item.id}
-            for data_item in itertools.chain(committed_data, committed_preprocess)
+            for data_item in committed_data
         ]
         if association_payload:
             await db.execute(
                 insert(models.dataset_data_association),
                 association_payload,
             )
+
+        preprocess_links = [
+            models.DatasetPreprocessData(
+                dataset_id=dataset.id,
+                data_id=data_item.id,
+                category=category,
+            )
+            for category, data_item in committed_preprocess
+        ]
+        if preprocess_links:
+            db.add_all(preprocess_links)
+            await db.flush()
     except IntegrityError as exc:
         await db.rollback()
         message = str(getattr(exc, "orig", exc))
@@ -899,6 +908,11 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Commit failed because the dataset already references one of the FITS files.",
+            ) from exc
+        if "dataset_preprocess_data" in message:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Commit failed because the dataset already references one of the preprocessing files.",
             ) from exc
         raise
 
@@ -929,7 +943,7 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
     for data_item in committed_data:
         await db.refresh(data_item)
         setattr(data_item, "dataset_id", dataset.id)
-    for data_item in committed_preprocess:
+    for _, data_item in committed_preprocess:
         await db.refresh(data_item)
         setattr(data_item, "dataset_id", dataset.id)
     for session_model in sessions:
@@ -942,12 +956,21 @@ async def commit_uploads(payload: schemas.UploadCommitRequest, db: DBSession) ->
     if session_ids:
         _start_session_worker(session_ids)
 
+    preprocess_data_items = [data_item for _, data_item in committed_preprocess]
+    preprocess_grouped = {
+        category: [] for category in schemas.PREPROCESS_CATEGORY_VALUES
+    }
+    for category, data_item in committed_preprocess:
+        if category in preprocess_grouped:
+            preprocess_grouped[category].append(data_item)
+
     # ---- Return final response ----
     return schemas.UploadCommitResponse(
         repository=repository,
         dataset=dataset,
         data=committed_data,
-        preprocess_data=committed_preprocess,
+        preprocess_data=preprocess_data_items,
+        preprocess_grouped=schemas.DatasetPreprocessGroup(**preprocess_grouped),
         sessions=sessions,
     )
 
