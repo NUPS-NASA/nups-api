@@ -299,6 +299,17 @@ def _start_single_session_worker(session_id: int) -> None:
                     if session_obj is None:
                         return
 
+                    if session_obj.status == "completed" or session_obj.progress >= 100:
+                        session_obj.status = "completed"
+                        session_obj.progress = 100
+                        session_obj.current_step = session_obj.current_step or "completed"
+                        if session_obj.started_at is None:
+                            session_obj.started_at = datetime.now(tz=timezone.utc)
+                        if session_obj.finished_at is None:
+                            session_obj.finished_at = datetime.now(tz=timezone.utc)
+                        await session.commit()
+                        return
+
                     if not SIMULATED_PIPELINE_STEPS:
                         session_obj.status = "completed"
                         session_obj.progress = 100
