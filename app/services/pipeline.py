@@ -8,14 +8,16 @@ results sequentially.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
 import numpy as np
+import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -34,9 +36,14 @@ from core.alignment.PrepareFits import (
 )
 from core.alignment.FWHM import get_header_airmass, estimate_frame_fwhm
 from core.alignment.Detrending import (
-    detrend_by_covariates,
     pick_comps_rms_aware_general,
     weighted_reference,
+)
+from core.denosing.gp_lightcurve_detrend import detrend_df
+from core.denosing.suggested_param import suggest_from_df
+from core.measure.flat_bottom_detector import (
+    DetectionParams,
+    process_file,
 )
 from core.alignment.PrepareFits import align_to_reference
 
@@ -50,6 +57,8 @@ class PipelineContext:
     session: models.Session
     dataset: models.Dataset
     analysis_dir: Path
+    denoise_dir: Path
+    measure_dir: Path
     light_files: list[Path]
     bias_files: list[Path]
     dark_files: list[Path]
@@ -71,6 +80,8 @@ class PipelineContext:
     detrended_lightcurves: dict[int, np.ndarray] = field(default_factory=dict)
     target_index: int | None = None
     comparison_indices: list[int] = field(default_factory=list)
+    denoise_target_csv: Path | None = None
+    measure_summary_csv: Path | None = None
 
 
 @dataclass
@@ -493,67 +504,149 @@ async def _step_lightcurve(ctx: PipelineContext, db: AsyncSession) -> dict[str, 
 
 
 async def _step_detrend(ctx: PipelineContext, db: AsyncSession) -> dict[str, Any]:
-    if not ctx.raw_lightcurves or ctx.times is None:
-        raise RuntimeError("Raw lightcurves missing before detrending step")
-    if ctx.raw_lightcurve is None:
-        raise RuntimeError("Target raw lightcurve missing before detrending step")
+    if ctx.times is None:
+        raise RuntimeError("Observation times missing before denoise step")
+    if ctx.raw_lightcurve is None or ctx.target_index is None:
+        raise RuntimeError("Target lightcurve missing before denoise step")
 
-    first_series = next(iter(ctx.raw_lightcurves.values()))
-    length = int(first_series.shape[0])
+    times = _ensure_numpy_array(ctx.times, ctx.raw_lightcurve.shape[0])
+    raw_flux = _ensure_numpy_array(ctx.raw_lightcurve, times.shape[0])
+    finite_mask = np.isfinite(times) & np.isfinite(raw_flux)
+    finite_count = int(np.count_nonzero(finite_mask))
+    if finite_count < 5:
+        raise RuntimeError("Not enough valid samples in target lightcurve for denoise step")
 
-    covariates: list[np.ndarray] = []
-    cov_names: list[str] = []
-    for name, data in ("airmass", ctx.airmass), ("fwhm", ctx.fwhm), ("sky", ctx.sky):
-        arr = _ensure_numpy_array(data, length)
-        if np.any(np.isfinite(arr)):
-            covariates.append(arr)
-            cov_names.append(name)
-
-    per_star_payload: dict[str, dict[str, Any]] = {}
-    detrended_lightcurves: dict[int, np.ndarray] = {}
-
-    target_baseline: np.ndarray | None = None
-    target_corrected: np.ndarray | None = None
-    target_good: np.ndarray | None = None
-
-    for star_index, raw_series in ctx.raw_lightcurves.items():
-        series = _ensure_numpy_array(raw_series, length)
-        if covariates:
-            baseline, corrected, good = detrend_by_covariates(series, covariates)
-        else:
-            baseline = np.ones_like(series)
-            corrected = series.copy()
-            good = np.isfinite(series)
-
-        detrended_lightcurves[star_index] = corrected
-        per_star_payload[str(star_index)] = {
-            "raw_relative_flux": series.astype(float).tolist(),
-            "detrended_flux": corrected.astype(float).tolist(),
-            "baseline": baseline.astype(float).tolist(),
-            "good_mask": good.astype(bool).tolist(),
+    filtered_times = times[finite_mask]
+    filtered_flux = raw_flux[finite_mask]
+    filtered_df = pd.DataFrame(
+        {
+            "time": filtered_times.astype(float),
+            "flux": filtered_flux.astype(float),
         }
+    )
 
-        if star_index == ctx.target_index:
-            target_baseline = baseline
-            target_corrected = corrected
-            target_good = good
+    ctx.denoise_dir.mkdir(parents=True, exist_ok=True)
+    raw_csv_path = ctx.denoise_dir / "target_lightcurve_raw.csv"
+    filtered_df.to_csv(raw_csv_path, index=False)
 
-    if target_corrected is None or target_baseline is None or target_good is None:
-        raise RuntimeError("Target star detrending failed")
+    params = suggest_from_df(filtered_df, time_col="time", flux_col="flux")
+    seed = int(ctx.session.id % (2**32 - 1)) or 1
 
-    ctx.detrended_flux = target_corrected
-    ctx.detrended_lightcurves = detrended_lightcurves
+    try:
+        denoised_df, _, _ = detrend_df(
+            filtered_df.copy(),
+            time="time",
+            flux="flux",
+            err=None,
+            unit="days",
+            center_flux=True,
+            mean_const=True,
+            samples=128,
+            warmup=128,
+            chains=1,
+            seed=seed,
+            transit_duration_hours=params["transit_duration_hours"],
+            rho_mult=params["rho_mult"],
+        )
+        corrected_series = denoised_df["flux_corrected"].to_numpy(dtype=float)
+        method = "gp"
+    except Exception as exc:  # pragma: no cover - stochastic library fallback
+        logger.warning(
+            "GP denoise failed for session %s; falling back to moving average: %s",
+            ctx.session.id,
+            exc,
+        )
+        window = max(5, int(round(filtered_times.size * 0.1)))
+        corrected_series = (
+            pd.Series(filtered_flux)
+            .rolling(window=window, center=True, min_periods=1)
+            .mean()
+            .to_numpy(dtype=float)
+        )
+        denoised_df = pd.DataFrame(
+            {
+                "time": filtered_times,
+                "flux_corrected": corrected_series,
+            }
+        )
+        method = "moving-average"
+
+    denoised_df = denoised_df.copy()
+    denoised_df["time"] = filtered_times.astype(float)
+    denoised_df["flux_raw"] = filtered_flux.astype(float)
+    denoised_df["residual"] = (
+        denoised_df["flux_raw"] - denoised_df["flux_corrected"]
+    )
+
+    denoise_csv_path = ctx.denoise_dir / "target_lightcurve_denoised.csv"
+    denoised_df[["time", "flux_corrected", "flux_raw", "residual"]].to_csv(
+        denoise_csv_path,
+        index=False,
+    )
+
+    corrected_full = np.full_like(times, np.nan, dtype=float)
+    residual_full = np.full_like(times, np.nan, dtype=float)
+    corrected_full[finite_mask] = denoised_df["flux_corrected"].to_numpy(dtype=float)
+    residual_full[finite_mask] = denoised_df["residual"].to_numpy(dtype=float)
+
+    arrays_path = ctx.denoise_dir / "target_lightcurve_arrays.npz"
+    np.savez_compressed(
+        arrays_path,
+        time=times.astype(float),
+        raw_flux=raw_flux.astype(float),
+        denoised_flux=corrected_full.astype(float),
+        residual=residual_full.astype(float),
+        finite_mask=finite_mask,
+    )
+
+    params_summary = {
+        key: _summary_float(value) for key, value in params.items()
+    }
+    summary_payload = {
+        "method": method,
+        "parameters": params_summary,
+        "points_total": int(times.size),
+        "points_finite": finite_count,
+        "raw_csv": raw_csv_path.as_posix(),
+        "denoised_csv": denoise_csv_path.as_posix(),
+        "npz_path": arrays_path.as_posix(),
+    }
+    summary_json_path = ctx.denoise_dir / "summary.json"
+    summary_json_path.write_text(json.dumps(summary_payload, indent=2))
+
+    ctx.detrended_flux = corrected_full
+    ctx.detrended_lightcurves = {ctx.target_index: corrected_full}
+    ctx.denoise_target_csv = denoise_csv_path
 
     payload = {
-        "times": ctx.times.astype(float).tolist(),
-        "raw_relative_flux": ctx.raw_lightcurve.astype(float).tolist()
-        if ctx.raw_lightcurve is not None
-        else [],
-        "detrended_flux": target_corrected.astype(float).tolist(),
-        "baseline": target_baseline.astype(float).tolist(),
-        "covariate_names": cov_names,
-        "good_mask": target_good.astype(bool).tolist(),
-        "stars": per_star_payload,
+        "target_index": ctx.target_index,
+        "method": method,
+        "times": times.astype(float).tolist(),
+        "raw_relative_flux": raw_flux.astype(float).tolist(),
+        "denoised_flux": corrected_full.astype(float).tolist(),
+        "detrended_flux": corrected_full.astype(float).tolist(),
+        "residual": residual_full.astype(float).tolist(),
+        "finite_mask": finite_mask.astype(bool).tolist(),
+        "good_mask": finite_mask.astype(bool).tolist(),
+        "covariate_names": [],
+        "baseline": np.ones_like(corrected_full, dtype=float).tolist(),
+        "parameters": params_summary,
+        "file_paths": {
+            "raw_csv": raw_csv_path.as_posix(),
+            "denoised_csv": denoise_csv_path.as_posix(),
+            "npz": arrays_path.as_posix(),
+            "summary_json": summary_json_path.as_posix(),
+        },
+    }
+    payload["stars"] = {
+        str(ctx.target_index): {
+            "time": filtered_times.astype(float).tolist(),
+            "raw_relative_flux": filtered_flux.astype(float).tolist(),
+            "denoised_flux": denoised_df["flux_corrected"].to_numpy(dtype=float).tolist(),
+            "detrended_flux": denoised_df["flux_corrected"].to_numpy(dtype=float).tolist(),
+            "residual": denoised_df["residual"].to_numpy(dtype=float).tolist(),
+            "baseline": np.ones_like(denoised_df["flux_corrected"], dtype=float).tolist(),
+        }
     }
 
     record = await db.scalar(
@@ -567,37 +660,115 @@ async def _step_detrend(ctx: PipelineContext, db: AsyncSession) -> dict[str, Any
     await db.flush()
 
     summary = {
-        "covariates_used": cov_names,
-        "points": len(target_corrected),
-        "stars_detrended": len(per_star_payload),
+        "method": method,
+        "points": finite_count,
+        "transit_duration_hours": params_summary.get("transit_duration_hours"),
+        "rho_mult": params_summary.get("rho_mult"),
+        "denoised_csv": denoise_csv_path.as_posix(),
     }
     return summary
 
 
 async def _step_candidate(ctx: PipelineContext, db: AsyncSession) -> dict[str, Any]:
     if ctx.detrended_flux is None or ctx.times is None:
-        raise RuntimeError("Detrended flux missing before candidate extraction")
+        raise RuntimeError("Denoised flux missing before measurement step")
+    if ctx.denoise_target_csv is None:
+        raise RuntimeError("Denoised CSV missing before measurement step")
 
-    flux = ctx.detrended_flux
-    times = ctx.times
-    finite = np.isfinite(flux)
-    if not np.any(finite):
-        raise RuntimeError("Detrended flux contains no finite values")
+    times = _ensure_numpy_array(ctx.times, ctx.detrended_flux.shape[0])
+    denoised_flux = _ensure_numpy_array(ctx.detrended_flux, times.shape[0])
+    finite_mask = np.isfinite(times) & np.isfinite(denoised_flux)
+    if not np.any(finite_mask):
+        raise RuntimeError("Denoised lightcurve contains no finite values")
 
-    min_index = int(np.nanargmin(flux))
-    min_time = float(times[min_index]) if np.isfinite(times[min_index]) else float(min_index)
-    median_flux = float(np.nanmedian(flux[finite])) if np.any(finite) else float("nan")
-    min_flux = float(flux[min_index])
+    ctx.measure_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure measurement input CSV exists (contains time, corrected flux, raw flux if available)
+    if not ctx.denoise_target_csv.exists():
+        df = pd.DataFrame({
+            "time": times[finite_mask].astype(float),
+            "flux_corrected": denoised_flux[finite_mask].astype(float),
+        })
+        if ctx.raw_lightcurve is not None:
+            raw_series = _ensure_numpy_array(ctx.raw_lightcurve, times.shape[0])
+            df["flux_raw"] = raw_series[finite_mask].astype(float)
+        df.to_csv(ctx.denoise_target_csv, index=False)
+
+    params = DetectionParams()
+    try:
+        result = process_file(
+            path=ctx.denoise_target_csv,
+            rel_root=ctx.denoise_dir,
+            out_dir=ctx.measure_dir,
+            y_col="flux_corrected",
+            y_raw_col="flux_raw",
+            fits_dir=None,
+            params=params,
+            export_debug_csv=True,
+            make_plot=True,
+        )
+    except Exception as exc:  # pragma: no cover - heavy numerical routine fallback
+        raise RuntimeError(f"Measurement step failed: {exc}") from exc
+
+    def _normalize(value: Any) -> Any:
+        if isinstance(value, (np.floating, np.float32, np.float64)):
+            return float(value)
+        if isinstance(value, (np.integer, np.int32, np.int64)):
+            return int(value)
+        if isinstance(value, (np.bool_, bool)):
+            return bool(value)
+        return value
+
+    normalized_result = {key: _normalize(val) for key, val in result.items()}
+
+    summary_df = pd.DataFrame([normalized_result])
+    measure_summary_csv = ctx.measure_dir / "summary.csv"
+    summary_df.to_csv(measure_summary_csv, index=False)
+    ctx.measure_summary_csv = measure_summary_csv
+
+    measure_summary_json = ctx.measure_dir / "summary.json"
+    measure_summary_json.write_text(json.dumps(normalized_result, indent=2))
+
+    arrays_path = ctx.measure_dir / "measurement_arrays.npz"
+    np.savez_compressed(
+        arrays_path,
+        time=times.astype(float),
+        denoised_flux=denoised_flux.astype(float),
+        finite_mask=finite_mask,
+    )
+
+    finite_flux = denoised_flux[finite_mask]
+    finite_times = times[finite_mask]
+    min_index = int(np.nanargmin(finite_flux))
+    min_time = float(finite_times[min_index]) if np.isfinite(finite_times[min_index]) else float(min_index)
+    median_flux = float(np.nanmedian(finite_flux)) if finite_flux.size else float("nan")
+    min_flux = float(finite_flux[min_index])
     depth = median_flux - min_flux if np.isfinite(median_flux) else None
 
-    payload = {
-        "target_index": ctx.target_index,
-        "comparison_indices": ctx.comparison_indices,
+    legacy_event = {
         "event_time": min_time,
         "event_index": min_index,
         "median_flux": median_flux,
         "min_flux": min_flux,
         "depth": depth,
+    }
+
+    payload = {
+        "target_index": ctx.target_index,
+        "comparison_indices": ctx.comparison_indices,
+        "detection": normalized_result,
+        "detection_parameters": {
+            key: _normalize(value) for key, value in asdict(params).items()
+        },
+        "files": {
+            "input_csv": ctx.denoise_target_csv.as_posix(),
+            "summary_csv": measure_summary_csv.as_posix(),
+            "summary_json": measure_summary_json.as_posix(),
+            "npz": arrays_path.as_posix(),
+            "plot": normalized_result.get("plot"),
+            "debug_csv": normalized_result.get("debug_csv"),
+        },
+        "legacy_event": legacy_event,
     }
 
     record = await db.scalar(
@@ -611,9 +782,11 @@ async def _step_candidate(ctx: PipelineContext, db: AsyncSession) -> dict[str, A
     await db.flush()
 
     summary = {
-        "event_index": min_index,
-        "event_time": min_time,
+        "detected": bool(normalized_result.get("detected")),
         "depth": depth,
+        "event_time": legacy_event["event_time"],
+        "summary_csv": measure_summary_csv.as_posix(),
+        "plot": normalized_result.get("plot"),
     }
     return summary
 
@@ -623,8 +796,8 @@ PIPELINE_STEPS: list[StepDefinition] = [
     StepDefinition("detect-reference", _step_detect_reference),
     StepDefinition("photometry", _step_photometry),
     StepDefinition("lightcurve", _step_lightcurve),
-    StepDefinition("detrend", _step_detrend),
-    StepDefinition("candidate", _step_candidate),
+    StepDefinition("denoise", _step_detrend),
+    StepDefinition("measure", _step_candidate),
 ]
 
 
@@ -672,10 +845,18 @@ class SessionPipelineRunner:
         )
         analysis_root.mkdir(parents=True, exist_ok=True)
 
+        alignment_dir = analysis_root / "alignment"
+        denoise_dir = analysis_root / "denoise"
+        measure_dir = analysis_root / "measure"
+        for path in (alignment_dir, denoise_dir, measure_dir):
+            path.mkdir(parents=True, exist_ok=True)
+
         return PipelineContext(
             session=session_obj,
             dataset=dataset,
-            analysis_dir=analysis_root,
+            analysis_dir=alignment_dir,
+            denoise_dir=denoise_dir,
+            measure_dir=measure_dir,
             light_files=sorted(light_files),
             bias_files=sorted(preprocess_map.get("bias", [])),
             dark_files=sorted(preprocess_map.get("dark", [])),
