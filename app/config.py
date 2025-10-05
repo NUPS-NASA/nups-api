@@ -10,6 +10,14 @@ class Settings(BaseSettings):
     app_name: str = "nups-api"
     app_port: int = 4000
     database_url: str = "sqlite+aiosqlite:///./nups.db"
+    storage_tmp_dir: str = Field(
+        default="./storage/tmp",
+        description="Directory used for staging uploaded artefacts before persistence.",
+    )
+    storage_data_dir: str = Field(
+        default="./storage/data",
+        description="Directory where committed data artefacts are stored.",
+    )
     auth_secret_key: str = Field(
         default="change-me",
         description="Secret key used for signing authentication tokens.",

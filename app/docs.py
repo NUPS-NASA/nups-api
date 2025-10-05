@@ -59,6 +59,10 @@ TAGS_METADATA = [
         "description": "Fine-grained data artefacts contained within dataset versions.",
     },
     {
+        "name": "uploads",
+        "description": "Stage FITS files, commit uploads, and trigger processing sessions.",
+    },
+    {
         "name": "sessions",
         "description": "Processing session history and pipeline step inspection.",
     },

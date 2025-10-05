@@ -470,6 +470,71 @@ class DataRead(BaseModel):
 
 
 # -----------------------
+# Upload workflow schemas
+# -----------------------
+
+
+class TempUploadItem(BaseModel):
+    temp_id: str = Field(description="Unique identifier for the staged upload item.")
+    filename: str = Field(description="Original filename supplied by the client.")
+    size_bytes: int = Field(description="Size of the uploaded file in bytes.")
+    content_type: str | None = Field(
+        default=None,
+        description="Content type provided by the client during upload.",
+    )
+    fits_temp_path: str = Field(description="Filesystem path where the staged FITS file is stored.")
+    image_temp_path: str | None = Field(
+        default=None,
+        description="Filesystem path of the generated preview image.",
+    )
+    fits_data_json: dict | None = Field(
+        default=None,
+        description="Extracted FITS metadata captured during staging.",
+    )
+    metadata_json: dict | None = Field(
+        default=None,
+        description="Additional metadata describing the upload item.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class UploadCommitItem(BaseModel):
+    temp_id: str = Field(description="Identifier of the staged item being committed.")
+    fits_temp_path: str = Field(description="Temporary path of the staged FITS file.")
+    image_temp_path: str | None = Field(
+        default=None,
+        description="Temporary path of the generated preview image.",
+    )
+    fits_data_json: dict | None = Field(
+        default=None,
+        description="FITS metadata supplied during commit.",
+    )
+    metadata_json: dict | None = Field(
+        default=None,
+        description="Arbitrary metadata supplied during commit.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class UploadCommitRequest(BaseModel):
+    user_id: int = Field(description="Identifier of the user owning the new repository.")
+    repository_name: str = Field(description="Name of the repository that will be created.")
+    repository_description: str | None = Field(
+        default=None,
+        description="Optional description for the repository.",
+    )
+    captured_at: datetime | None = Field(
+        default=None,
+        description="Optional capture timestamp for the resulting dataset.",
+    )
+    items: list[UploadCommitItem] = Field(description="Staged upload items to commit.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# -----------------------
 # Session & pipeline schemas
 # -----------------------
 
@@ -543,6 +608,15 @@ class CandidateVerifyUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class UploadCommitResponse(BaseModel):
+    repository: RepositoryRead = Field(description="Repository created during commit.")
+    dataset: DatasetRead = Field(description="Dataset that stores the committed data items.")
+    data: list[DataRead] = Field(description="Committed data items persisted to storage.")
+    sessions: list[SessionRead] = Field(description="Sessions spawned for each committed data item.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # -----------------------
 # Stats schemas
 # -----------------------
@@ -607,6 +681,10 @@ __all__ = [
     "SessionRead",
     "SessionSummary",
     "StarRead",
+    "TempUploadItem",
+    "UploadCommitItem",
+    "UploadCommitRequest",
+    "UploadCommitResponse",
     "UserCreate",
     "UserLogin",
     "UserProfileCreate",
